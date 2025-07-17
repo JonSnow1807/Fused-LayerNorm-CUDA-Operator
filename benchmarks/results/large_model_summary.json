@@ -1,0 +1,62 @@
+{
+  "timestamp": "2025-07-17T02:54:23.240131",
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "best_speedup": 1.027,
+  "average_speedup_large_models": 0.9803333333333333,
+  "results": [
+    {
+      "model": "GPT-2 XL",
+      "batch_size": 8,
+      "seq_len": 512,
+      "hidden_size": 1600,
+      "pytorch_ms": 0.056,
+      "fused_ms": 0.08,
+      "speedup": 0.708
+    },
+    {
+      "model": "GPT-3 Small",
+      "batch_size": 8,
+      "seq_len": 512,
+      "hidden_size": 2048,
+      "pytorch_ms": 0.057,
+      "fused_ms": 0.083,
+      "speedup": 0.687
+    },
+    {
+      "model": "GPT-3 Medium",
+      "batch_size": 4,
+      "seq_len": 1024,
+      "hidden_size": 2560,
+      "pytorch_ms": 0.074,
+      "fused_ms": 0.1,
+      "speedup": 0.741
+    },
+    {
+      "model": "GPT-3 Large",
+      "batch_size": 4,
+      "seq_len": 1024,
+      "hidden_size": 4096,
+      "pytorch_ms": 0.126,
+      "fused_ms": 0.13,
+      "speedup": 0.969
+    },
+    {
+      "model": "GPT-3 XL",
+      "batch_size": 2,
+      "seq_len": 2048,
+      "hidden_size": 5120,
+      "pytorch_ms": 0.16,
+      "fused_ms": 0.155,
+      "speedup": 1.027
+    },
+    {
+      "model": "GPT-3 175B",
+      "batch_size": 2,
+      "seq_len": 2048,
+      "hidden_size": 12288,
+      "pytorch_ms": 0.375,
+      "fused_ms": 0.397,
+      "speedup": 0.945
+    }
+  ]
+}

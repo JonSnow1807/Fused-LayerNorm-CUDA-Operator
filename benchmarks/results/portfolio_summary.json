@@ -1,0 +1,40 @@
+{
+  "title": "Fused LayerNorm CUDA - Performance Results",
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "achievement": "Successfully achieved 1.4x+ speedup over PyTorch native implementation",
+  "best_speedup": 1.488,
+  "configurations_meeting_target": 6,
+  "key_results": [
+    {
+      "model": "GPT-3 Medium",
+      "speedup": "1.425x",
+      "performance": "0.05ms vs 0.07ms"
+    },
+    {
+      "model": "GPT-3 Large",
+      "speedup": "1.416x",
+      "performance": "0.05ms vs 0.07ms"
+    },
+    {
+      "model": "Custom-4K",
+      "speedup": "1.419x",
+      "performance": "0.05ms vs 0.07ms"
+    },
+    {
+      "model": "GPT-3 XL",
+      "speedup": "1.488x",
+      "performance": "0.06ms vs 0.09ms"
+    },
+    {
+      "model": "Custom-6K",
+      "speedup": "1.486x",
+      "performance": "0.07ms vs 0.10ms"
+    },
+    {
+      "model": "Large Model",
+      "speedup": "1.424x",
+      "performance": "0.05ms vs 0.07ms"
+    }
+  ],
+  "timestamp": "2025-07-17T03:18:03.519784"
+}
