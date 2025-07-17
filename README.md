@@ -95,7 +95,7 @@ The implementation shows optimal performance on large language model configurati
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/fused-layernorm-cuda.git
+git clone https://github.com/JonSnow1807/fused-layernorm-cuda.git
 cd fused-layernorm-cuda
 
 # Install the package
@@ -261,7 +261,7 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 
 ```bash
 # Clone and install in development mode
-git clone https://github.com/yourusername/fused-layernorm-cuda.git
+git clone https://github.com/JonSnow1807/Fused-LayerNorm-CUDA-Operator.git
 cd fused-layernorm-cuda
 pip install -e ".[dev]"
 
@@ -276,9 +276,9 @@ If you use this implementation in your research, please cite:
 ```bibtex
 @software{fused_layernorm_cuda,
   title = {Fused LayerNorm CUDA Operator for PyTorch},
-  author = {Your Name},
-  year = {2024},
-  url = {https://github.com/yourusername/fused-layernorm-cuda},
+  author = {Chinmay Shrivastava},
+  year = {2025},
+  url = {[https://github.com/JonSnow1807/fused-layernorm-cuda](https://github.com/JonSnow1807/Fused-LayerNorm-CUDA-Operator)},
   note = {Achieving 1.46x speedup over PyTorch native implementation}
 }
 ```
@@ -326,6 +326,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 <div align="center">
 
-**[⭐ Star this repository](https://github.com/yourusername/fused-layernorm-cuda)** if you find it useful!
+**[⭐ Star this repository]([https://github.com/yourusername/fused-layernorm-cuda](https://github.com/JonSnow1807/Fused-LayerNorm-CUDA-Operator))** if you find it useful!
 
 </div>
