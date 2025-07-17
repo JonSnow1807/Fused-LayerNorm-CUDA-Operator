@@ -278,7 +278,7 @@ If you use this implementation in your research, please cite:
   title = {Fused LayerNorm CUDA Operator for PyTorch},
   author = {Chinmay Shrivastava},
   year = {2025},
-  url = {[https://github.com/JonSnow1807/fused-layernorm-cuda](https://github.com/JonSnow1807/Fused-LayerNorm-CUDA-Operator)},
+  url = {https://github.com/JonSnow1807/Fused-LayerNorm-CUDA-Operator},
   note = {Achieving 1.46x speedup over PyTorch native implementation}
 }
 ```
