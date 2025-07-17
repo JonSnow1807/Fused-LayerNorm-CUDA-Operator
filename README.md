@@ -95,7 +95,7 @@ The implementation shows optimal performance on large language model configurati
 
 ```bash
 # Clone the repository
-git clone https://github.com/JonSnow1807/fused-layernorm-cuda.git
+git clone https://github.com/JonSnow1807/Fused-LayerNorm-CUDA-Operator.git
 cd fused-layernorm-cuda
 
 # Install the package
@@ -326,6 +326,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 <div align="center">
 
-**[⭐ Star this repository]([https://github.com/yourusername/fused-layernorm-cuda](https://github.com/JonSnow1807/Fused-LayerNorm-CUDA-Operator))** if you find it useful!
+**[⭐ Star this repository](https://github.com/JonSnow1807/Fused-LayerNorm-CUDA-Operator))** if you find it useful!
 
 </div>
