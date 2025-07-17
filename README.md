@@ -326,6 +326,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 <div align="center">
 
-**[⭐ Star this repository](https://github.com/JonSnow1807/Fused-LayerNorm-CUDA-Operator))** if you find it useful!
+**[⭐ Star this repository](https://github.com/JonSnow1807/Fused-LayerNorm-CUDA-Operator)** if you find it useful!
 
 </div>
