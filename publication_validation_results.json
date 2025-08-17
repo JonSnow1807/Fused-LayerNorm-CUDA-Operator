@@ -1,0 +1,298 @@
+{
+  "metadata": {
+    "timestamp": "2025-08-17T20:00:04.201689",
+    "pytorch_version": "2.7.1+cu128",
+    "cuda_version": "12.8",
+    "gpu": "NVIDIA A100-SXM4-80GB"
+  },
+  "performance": {
+    "realistic": [
+      {
+        "config": "Tiny Batch",
+        "batch": 1,
+        "hidden": 768,
+        "pytorch_ms": 0.1198284812271595,
+        "ours_ms": 0.0376832002773881,
+        "speedup": 3.1798913135056335
+      },
+      {
+        "config": "Small Batch",
+        "batch": 8,
+        "hidden": 768,
+        "pytorch_ms": 0.050176000073552135,
+        "ours_ms": 0.029818880185484887,
+        "speedup": 1.682692299691945
+      },
+      {
+        "config": "BERT",
+        "batch": 32,
+        "hidden": 768,
+        "pytorch_ms": 0.05087232045829296,
+        "ours_ms": 0.03145728025585413,
+        "speedup": 1.6171875014155344
+      },
+      {
+        "config": "GPT-2 Small",
+        "batch": 32,
+        "hidden": 1024,
+        "pytorch_ms": 0.0485376001149416,
+        "ours_ms": 0.030105600133538246,
+        "speedup": 1.6122448946257588
+      },
+      {
+        "config": "GPT-2 Medium",
+        "batch": 32,
+        "hidden": 2048,
+        "pytorch_ms": 0.04704256005585194,
+        "ours_ms": 0.029511680006980897,
+        "speedup": 1.5940319237916705
+      },
+      {
+        "config": "GPT-3",
+        "batch": 32,
+        "hidden": 4096,
+        "pytorch_ms": 0.046960639953613284,
+        "ours_ms": 0.028180480040609836,
+        "speedup": 1.666424414557171
+      },
+      {
+        "config": "Large Batch",
+        "batch": 64,
+        "hidden": 4096,
+        "pytorch_ms": 0.05513216041028499,
+        "ours_ms": 0.02854911994189024,
+        "speedup": 1.931133447283233
+      },
+      {
+        "config": "XL Batch",
+        "batch": 128,
+        "hidden": 4096,
+        "pytorch_ms": 0.04913152039051056,
+        "ours_ms": 0.02885632000863552,
+        "speedup": 1.7026259888928144
+      },
+      {
+        "config": "Odd Dims",
+        "batch": 17,
+        "hidden": 1023,
+        "pytorch_ms": 0.0582246407866478,
+        "ours_ms": 0.04009984027594328,
+        "speedup": 1.4519918380218078
+      },
+      {
+        "config": "GPT-3 Large",
+        "batch": 32,
+        "hidden": 12288,
+        "pytorch_ms": 0.054517759308218956,
+        "ours_ms": 0.029982720129191877,
+        "speedup": 1.8183059800214454
+      }
+    ],
+    "optimal": [
+      {
+        "config": "Tiny Batch",
+        "batch": 1,
+        "hidden": 768,
+        "pytorch_ms": 0.021110784530639647,
+        "ours_ms": 0.01005568027496338,
+        "speedup": 2.099388997400927
+      },
+      {
+        "config": "Small Batch",
+        "batch": 8,
+        "hidden": 768,
+        "pytorch_ms": 0.021123071670532227,
+        "ours_ms": 0.010141695976257324,
+        "speedup": 2.0827948027611307
+      },
+      {
+        "config": "BERT",
+        "batch": 32,
+        "hidden": 768,
+        "pytorch_ms": 0.021166080474853514,
+        "ours_ms": 0.010106880187988282,
+        "speedup": 2.0942249320427044
+      },
+      {
+        "config": "GPT-2 Small",
+        "batch": 32,
+        "hidden": 1024,
+        "pytorch_ms": 0.021170175552368165,
+        "ours_ms": 0.01003110408782959,
+        "speedup": 2.110453183120016
+      },
+      {
+        "config": "GPT-2 Medium",
+        "batch": 32,
+        "hidden": 2048,
+        "pytorch_ms": 0.02207744026184082,
+        "ours_ms": 0.01009663963317871,
+        "speedup": 2.186612681440252
+      },
+      {
+        "config": "GPT-3",
+        "batch": 32,
+        "hidden": 4096,
+        "pytorch_ms": 0.02109235191345215,
+        "ours_ms": 0.009992192268371582,
+        "speedup": 2.110883312385416
+      },
+      {
+        "config": "Large Batch",
+        "batch": 64,
+        "hidden": 4096,
+        "pytorch_ms": 0.02105548858642578,
+        "ours_ms": 0.010108927726745605,
+        "speedup": 2.082860730195786
+      },
+      {
+        "config": "XL Batch",
+        "batch": 128,
+        "hidden": 4096,
+        "pytorch_ms": 0.021360639572143555,
+        "ours_ms": 0.010102784156799317,
+        "speedup": 2.114331974297159
+      },
+      {
+        "config": "Odd Dims",
+        "batch": 17,
+        "hidden": 1023,
+        "pytorch_ms": 0.024211456298828125,
+        "ours_ms": 0.010010623931884765,
+        "speedup": 2.4185761510541206
+      },
+      {
+        "config": "GPT-3 Large",
+        "batch": 32,
+        "hidden": 12288,
+        "pytorch_ms": 0.024375295639038085,
+        "ours_ms": 0.01245798397064209,
+        "speedup": 1.9566003373001428
+      }
+    ],
+    "avg_realistic_speedup": 1.8256529601807014,
+    "avg_optimal_speedup": 2.1256727101997654
+  },
+  "accuracy": [
+    {
+      "scenario": "Normal",
+      "max_abs_error": 4.76837158203125e-07,
+      "mean_abs_error": 2.032408730201496e-08,
+      "max_rel_error": 0.00014281415496952832
+    },
+    {
+      "scenario": "Large Values",
+      "max_abs_error": 4.76837158203125e-07,
+      "mean_abs_error": 9.63065804882035e-09,
+      "max_rel_error": 0.0002057081728707999
+    },
+    {
+      "scenario": "Small Values",
+      "max_abs_error": 1.1920928955078125e-07,
+      "mean_abs_error": 8.483065361275521e-10,
+      "max_rel_error": 0.0006436260300688446
+    },
+    {
+      "scenario": "Near Zero",
+      "max_abs_error": 1.1641532182693481e-10,
+      "mean_abs_error": 4.4889032812037155e-13,
+      "max_rel_error": 0.00010825920617207885
+    },
+    {
+      "scenario": "Mixed Range",
+      "max_abs_error": 4.76837158203125e-07,
+      "mean_abs_error": 1.418091954974443e-08,
+      "max_rel_error": 4.862308924202807e-05
+    }
+  ],
+  "statistical": [
+    {
+      "config": "BERT",
+      "samples": 30,
+      "speedup": 2.094595672198631,
+      "speedup_std": 0.03070400380883829,
+      "p_value": 1.322058036446564e-86,
+      "significant": true
+    },
+    {
+      "config": "GPT-3",
+      "samples": 30,
+      "speedup": 2.082254280814186,
+      "speedup_std": 0.026025462663864,
+      "p_value": 1.426188497339337e-94,
+      "significant": true
+    },
+    {
+      "config": "Odd",
+      "samples": 30,
+      "speedup": 2.4170323430512575,
+      "speedup_std": 0.22064824478731684,
+      "p_value": 2.468381468702398e-44,
+      "significant": true
+    }
+  ],
+  "edge_cases": [
+    {
+      "case": "Minimum (1\u00d71)",
+      "batch": 1,
+      "hidden": 1,
+      "correct": true,
+      "speedup": 2.384615313964304
+    },
+    {
+      "case": "Prime",
+      "batch": 1,
+      "hidden": 17,
+      "correct": true,
+      "speedup": 2.4122365694729146
+    },
+    {
+      "case": "Tall & Thin",
+      "batch": 1000,
+      "hidden": 1,
+      "correct": true,
+      "speedup": 2.3737575325690963
+    },
+    {
+      "case": "Max Hidden",
+      "batch": 1,
+      "hidden": 32768,
+      "correct": true,
+      "speedup": 2.3608695212040383
+    },
+    {
+      "case": "Lucky 13",
+      "batch": 13,
+      "hidden": 13,
+      "correct": true,
+      "speedup": 2.3117761967068398
+    },
+    {
+      "case": "4K-1",
+      "batch": 1,
+      "hidden": 4095,
+      "correct": true,
+      "speedup": 2.329089133889368
+    },
+    {
+      "case": "4K+1",
+      "batch": 1,
+      "hidden": 4097,
+      "correct": true,
+      "speedup": 2.3578431344575326
+    },
+    {
+      "case": "Square",
+      "batch": 512,
+      "hidden": 512,
+      "correct": true,
+      "speedup": 2.101593707264618
+    }
+  ],
+  "bandwidth": {
+    "kernel_time_ms": 0.04095999896526337,
+    "bandwidth_gb_s": 26.40000066692011,
+    "peak_bandwidth_gb_s": 1555,
+    "utilization_percent": 1.6977492390302322
+  }
+}
