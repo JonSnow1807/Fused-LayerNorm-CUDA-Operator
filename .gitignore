@@ -1,11 +1,22 @@
-
 # Build artifacts
 build/
+dist/
 *.so
 *.egg-info/
-__pycache__/
-*.pyc
-*.pyd
-*.pyo
-dist/
 *.egg
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Local benchmark output (commit curated results deliberately under benchmarks/results/<date>_<gpu>/)
+benchmarks/out/

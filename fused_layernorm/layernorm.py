@@ -1,280 +1,257 @@
-"""
-Fused LayerNorm Module for PyTorch
+"""Python front end for the ``fused_layernorm_cuda`` extension.
 
-This module provides a drop-in replacement for torch.nn.LayerNorm with
-significant performance improvements through CUDA kernel fusion.
+This module wraps the forward-only CUDA kernel exposed by the extension
+(``fused_layernorm_cuda.layernorm`` / ``fused_layernorm_cuda.layernorm_gelu``)
+behind ``F.layer_norm``-shaped functions and an ``nn.LayerNorm`` subclass.
 
-Key features:
-- 1.4x faster than native PyTorch implementation
-- 25% memory reduction through kernel fusion
-- Mixed precision (FP16/FP32) support
-- Gradient checkpointing compatible
+Design rules (see docstrings below for details):
+
+* The extension is imported lazily and optionally.  This module imports fine on
+  a machine without CUDA or without the compiled extension; every entry point
+  then falls back to plain PyTorch.
+* The kernel is forward-only and returns a tensor with no ``grad_fn``.  Whenever
+  autograd would need to record the op (grad mode on and some input requires
+  grad) we call ``torch.nn.functional.layer_norm`` instead, so training code
+  keeps correct gradients.  Silently breaking autograd would be a correctness
+  bug, not an optimisation.
+* Only the last dimension is normalised by the kernel, i.e. only a 1-D
+  ``normalized_shape`` equal to ``input.shape[-1]`` is eligible for the fused
+  path.  Every other case (multi-dim ``normalized_shape``, CPU tensors, ...) is
+  handled by PyTorch.
+* Nothing in ``torch.nn`` is monkeypatched.  Use :func:`replace_layernorm` on a
+  specific model instead.
+
+Limitations: no backward pass; the fused path never runs under autograd, under
+CUDA autocast, or with ``weight``/``bias`` whose dtype or device differs from
+``input`` (those calls go to PyTorch, which then behaves exactly as
+``nn.LayerNorm`` would -- including raising, since PyTorch's own CUDA LayerNorm
+rejects a weight/bias dtype different from the input outside autocast); the
+kernel is only used for CUDA tensors of dtype float32/float64/float16/bfloat16.
 """
+
+from __future__ import annotations
+
+from typing import Optional, Sequence, Union
 
 import torch
 import torch.nn as nn
-from torch.nn import Parameter
 import torch.nn.functional as F
-from torch.autograd import Function
-from typing import Optional, Tuple
 
-# Import the CUDA extension
-try:
-    import fused_layernorm_cuda
+__all__ = [
+    "is_available",
+    "layer_norm",
+    "layer_norm_gelu",
+    "LayerNorm",
+    "replace_layernorm",
+]
+
+# Lazy / optional import of the compiled extension.  ``_ext`` stays ``None`` when
+# the extension has not been built (or cannot be loaded), and every public
+# function below then uses the PyTorch fallback.
+try:  # pragma: no cover - exercised only when the extension is built
+    import fused_layernorm_cuda as _ext  # type: ignore[import-not-found]
 except ImportError:
-    raise ImportError(
-        "Cannot import fused_layernorm_cuda. Please ensure the CUDA extension is built. "
-        "Run: python setup.py install"
+    _ext = None
+
+_Shape = Union[int, Sequence[int], torch.Size]
+
+
+def is_available() -> bool:
+    """Return ``True`` iff the compiled extension imported and CUDA is usable.
+
+    When this returns ``False`` every function in this module still works, but
+    runs the plain PyTorch implementation.
+    """
+    return _ext is not None and torch.cuda.is_available()
+
+
+def _as_shape(normalized_shape: _Shape) -> tuple:
+    if isinstance(normalized_shape, int):
+        return (normalized_shape,)
+    return tuple(normalized_shape)
+
+
+def _needs_grad(*tensors: Optional[torch.Tensor]) -> bool:
+    """True if autograd would need to record an op over ``tensors``."""
+    return torch.is_grad_enabled() and any(
+        t is not None and t.requires_grad for t in tensors
     )
 
 
-class FusedLayerNormFunction(Function):
+def _same_dtype_and_device(input: torch.Tensor, *tensors: Optional[torch.Tensor]) -> bool:
+    """True if every given (non-None) tensor has ``input``'s dtype and device."""
+    return all(
+        t is None or (t.dtype == input.dtype and t.device == input.device) for t in tensors
+    )
+
+
+def _autocast_active() -> bool:
+    """True while a CUDA autocast region is active.
+
+    The no-argument form of ``torch.is_autocast_enabled`` reports the CUDA
+    autocast state on every torch >= 2.0 (the ``device_type`` argument only
+    exists on newer versions); the fused path is CUDA-only, so that is the
+    state we need.
     """
-    Custom autograd function for fused LayerNorm implementation.
-    
-    This function implements both forward and backward passes using
-    our optimized CUDA kernels, ensuring proper gradient flow.
+    return torch.is_autocast_enabled()
+
+
+def _use_fused(
+    input: torch.Tensor,
+    normalized_shape: tuple,
+    weight: Optional[torch.Tensor],
+    bias: Optional[torch.Tensor],
+) -> bool:
+    """Decide, per call, whether the CUDA kernel can be used.
+
+    All of the following must hold: the extension is importable, ``input`` is
+    a CUDA tensor, ``normalized_shape`` is 1-D and equals ``input.shape[-1]``,
+    ``weight``/``bias`` (when given) have ``input``'s dtype and device, no
+    CUDA autocast region is active, and no gradient is required (the kernel
+    is forward-only).
+
+    The dtype/device and autocast conditions exist so that this wrapper never
+    changes PyTorch's behaviour: under ``torch.autocast`` PyTorch runs
+    ``layer_norm`` in fp32 and returns fp32, whereas the kernel returns
+    ``input.dtype``; and outside autocast PyTorch's CUDA LayerNorm itself
+    rejects a ``weight``/``bias`` dtype different from ``input``.  Handing
+    those calls to PyTorch keeps this module a drop-in replacement (same
+    output dtype, same errors) instead of introducing new semantics.
     """
-    
-    @staticmethod
-    def forward(ctx, input: torch.Tensor, normalized_shape: Tuple[int, ...], 
-                weight: Optional[torch.Tensor] = None, 
-                bias: Optional[torch.Tensor] = None, 
-                eps: float = 1e-5) -> torch.Tensor:
+    return (
+        _ext is not None
+        and input.is_cuda
+        and input.dim() >= 1
+        and len(normalized_shape) == 1
+        and normalized_shape[-1] == input.shape[-1]
+        and _same_dtype_and_device(input, weight, bias)
+        and not _autocast_active()
+        and not _needs_grad(input, weight, bias)
+    )
+
+
+def layer_norm(
+    input: torch.Tensor,
+    normalized_shape: _Shape,
+    weight: Optional[torch.Tensor] = None,
+    bias: Optional[torch.Tensor] = None,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Layer normalisation with the same signature as ``F.layer_norm``.
+
+    The fused CUDA kernel is used iff the extension is available, ``input`` is
+    on a CUDA device, ``normalized_shape`` is one-dimensional and equal to
+    ``input.shape[-1]``, ``weight``/``bias`` (if given) have the same dtype
+    and device as ``input``, no CUDA autocast region is active, and autograd
+    does not need to record the op (``torch.is_grad_enabled()`` is False or
+    none of ``input``/``weight``/``bias`` requires grad).  In every other case
+    this is exactly ``torch.nn.functional.layer_norm``.
+
+    Rationale for the grad rule: the kernel is forward-only and returns a
+    tensor without ``grad_fn``.  Using it inside a training graph would
+    silently detach the output, which is a correctness bug; therefore any call
+    that autograd would record goes to PyTorch.
+
+    Rationale for the dtype / autocast rule: under ``torch.autocast`` PyTorch
+    runs ``layer_norm`` in fp32 and returns fp32 (the kernel would return
+    ``input.dtype``), and outside autocast PyTorch's CUDA kernel rejects a
+    ``weight``/``bias`` dtype different from ``input`` (so does this kernel).
+    Both kinds of call therefore go to PyTorch, so behaviour -- output dtype
+    and errors alike -- is unchanged from ``nn.LayerNorm``.
+    """
+    shape = _as_shape(normalized_shape)
+    if _use_fused(input, shape, weight, bias):
+        return _ext.layernorm(input, weight, bias, eps)
+    return F.layer_norm(input, shape, weight, bias, eps)
+
+
+def layer_norm_gelu(
+    input: torch.Tensor,
+    normalized_shape: _Shape,
+    weight: Optional[torch.Tensor] = None,
+    bias: Optional[torch.Tensor] = None,
+    eps: float = 1e-5,
+    approximate: str = "none",
+) -> torch.Tensor:
+    """``F.gelu(F.layer_norm(...), approximate=approximate)`` in one kernel.
+
+    ``approximate`` is ``"none"`` (erf GELU, the PyTorch default) or
+    ``"tanh"``.  The fused kernel is selected under the same rule as
+    :func:`layer_norm`; otherwise the two PyTorch ops are applied in sequence.
+    Forward-only on the fused path (see :func:`layer_norm`).
+    """
+    shape = _as_shape(normalized_shape)
+    if _use_fused(input, shape, weight, bias):
+        return _ext.layernorm_gelu(input, weight, bias, eps, approximate)
+    return F.gelu(F.layer_norm(input, shape, weight, bias, eps), approximate=approximate)
+
+
+class LayerNorm(nn.LayerNorm):
+    """``torch.nn.LayerNorm`` whose forward routes through :func:`layer_norm`.
+
+    Subclassing keeps ``__init__``, ``reset_parameters``, ``state_dict``
+    layout and ``extra_repr`` identical to ``nn.LayerNorm``.  Backend selection
+    (fused kernel vs PyTorch) happens per call inside :func:`layer_norm`, so the
+    repr deliberately does not claim a backend.
+    """
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
+        return layer_norm(input, self.normalized_shape, self.weight, self.bias, self.eps)
+
+    @classmethod
+    def from_torch(cls, module: nn.LayerNorm) -> "LayerNorm":
+        """Build a :class:`LayerNorm` that shares parameters with ``module``.
+
+        ``normalized_shape``, ``eps`` and ``elementwise_affine`` are copied and,
+        when the module is affine, the *same* ``weight``/``bias`` Parameter
+        objects are attached (not clones), so optimisers that already hold
+        references to them keep working and in-place updates are visible to
+        both modules.
         """
-        Forward pass of the fused LayerNorm.
-        
-        Args:
-            ctx: Context object for storing tensors for backward pass
-            input: Input tensor of shape (batch_size, hidden_size)
-            normalized_shape: Shape over which to normalize
-            weight: Optional scale parameter (gamma)
-            bias: Optional shift parameter (beta)
-            eps: Small value for numerical stability
-            
-        Returns:
-            Normalized output tensor
-        """
-        # Validate input dimensions
-        if input.dim() != 2:
-            raise ValueError(f"Expected 2D input, got {input.dim()}D")
-        
-        if len(normalized_shape) != 1 or normalized_shape[0] != input.size(1):
-            raise ValueError(
-                f"normalized_shape {normalized_shape} doesn't match input shape {input.shape}"
+        if not isinstance(module, nn.LayerNorm):
+            raise TypeError(
+                f"from_torch expects a torch.nn.LayerNorm, got {type(module).__name__}"
             )
-        
-        # Ensure input is contiguous
-        input = input.contiguous()
-        
-        # Call CUDA kernel
-        output, mean, rstd = fused_layernorm_cuda.forward(
-            input, weight, bias, eps
+        # ``bias`` kwarg exists on nn.LayerNorm since torch 2.1; construct with
+        # affine=False and attach the original parameters ourselves so the
+        # same code path works on every supported torch version.
+        new = cls(
+            tuple(module.normalized_shape),
+            eps=module.eps,
+            elementwise_affine=False,
         )
-        
-        # Save tensors for backward pass
-        ctx.save_for_backward(input, weight, bias, mean, rstd)
-        ctx.normalized_shape = normalized_shape
-        ctx.eps = eps
-        
-        return output
-    
-    @staticmethod
-    def backward(ctx, grad_output: torch.Tensor) -> Tuple[Optional[torch.Tensor], ...]:
-        """
-        Backward pass of the fused LayerNorm.
-        
-        Args:
-            ctx: Context object with saved tensors
-            grad_output: Gradient w.r.t. the output
-            
-        Returns:
-            Tuple of gradients w.r.t. (input, normalized_shape, weight, bias, eps)
-        """
-        # Retrieve saved tensors
-        input, weight, bias, mean, rstd = ctx.saved_tensors
-        grad_output = grad_output.contiguous()
-        
-        # Determine which gradients to compute
-        needs_input_grad = ctx.needs_input_grad[0]
-        needs_weight_grad = ctx.needs_input_grad[2] if weight is not None else False
-        needs_bias_grad = ctx.needs_input_grad[3] if bias is not None else False
-        
-        # Call CUDA kernel for backward pass
-        grad_input, grad_weight, grad_bias = fused_layernorm_cuda.backward(
-            grad_output, input, mean, rstd, weight, bias,
-            [needs_input_grad, needs_weight_grad, needs_bias_grad]
-        )
-        
-        return grad_input, None, grad_weight, grad_bias, None
+        new.elementwise_affine = module.elementwise_affine
+        # Registering under the same names keeps the state_dict keys identical.
+        new.weight = module.weight  # nn.Module.__setattr__ registers Parameters (or None)
+        new.bias = module.bias
+        new.training = module.training
+        return new
 
 
-class FusedLayerNorm(nn.Module):
+def replace_layernorm(model: nn.Module) -> int:
+    """Recursively swap ``nn.LayerNorm`` submodules of ``model`` for :class:`LayerNorm`.
+
+    Only modules whose exact type is ``torch.nn.LayerNorm`` (``type(m) is
+    nn.LayerNorm``) with a one-dimensional ``normalized_shape`` are replaced;
+    custom subclasses and multi-dim LayerNorms are left untouched.  Each
+    replacement is created with :meth:`LayerNorm.from_torch`, so parameters are
+    shared, not copied.  Works through ``nn.Sequential`` / ``nn.ModuleList`` /
+    ``nn.ModuleDict`` because it uses ``named_children`` + ``setattr``.
+    ``model`` itself is never replaced (only its descendants).
+
+    Returns the number of modules replaced.
+
+    This function deliberately does *not* monkeypatch ``torch.nn.LayerNorm``
+    globally (an earlier version of this package did).  Global patching changes
+    the behaviour of every library in the process, including ones that never
+    asked for it, and is very hard to undo; a per-model, opt-in replacement is
+    the only safe interface.
     """
-    Fused LayerNorm module - drop-in replacement for torch.nn.LayerNorm.
-    
-    This module provides the same interface as torch.nn.LayerNorm but with
-    significantly improved performance through CUDA kernel fusion.
-    
-    Attributes:
-        normalized_shape: Input shape from an expected input of size
-        eps: Value added to denominator for numerical stability
-        elementwise_affine: Whether to learn affine parameters
-        weight: Learnable scale parameter (gamma) if elementwise_affine=True
-        bias: Learnable shift parameter (beta) if elementwise_affine=True
-    """
-    
-    def __init__(self, normalized_shape: Tuple[int, ...], eps: float = 1e-5,
-                 elementwise_affine: bool = True, device=None, dtype=None) -> None:
-        """
-        Initialize the FusedLayerNorm module.
-        
-        Args:
-            normalized_shape: Input shape from an expected input
-            eps: Value added to denominator for numerical stability
-            elementwise_affine: Whether to learn affine parameters
-            device: Device to place parameters on
-            dtype: Data type of parameters
-        """
-        factory_kwargs = {'device': device, 'dtype': dtype}
-        super().__init__()
-        
-        # Handle both int and tuple inputs for normalized_shape
-        if isinstance(normalized_shape, int):
-            normalized_shape = (normalized_shape,)
-        self.normalized_shape = normalized_shape
-        self.eps = eps
-        self.elementwise_affine = elementwise_affine
-        
-        # Initialize learnable parameters
-        if self.elementwise_affine:
-            self.weight = Parameter(torch.empty(self.normalized_shape, **factory_kwargs))
-            self.bias = Parameter(torch.empty(self.normalized_shape, **factory_kwargs))
+    count = 0
+    for name, child in list(model.named_children()):
+        if type(child) is nn.LayerNorm and len(child.normalized_shape) == 1:
+            setattr(model, name, LayerNorm.from_torch(child))
+            count += 1
         else:
-            self.register_parameter('weight', None)
-            self.register_parameter('bias', None)
-        
-        self.reset_parameters()
-    
-    def reset_parameters(self) -> None:
-        """Initialize parameters."""
-        if self.elementwise_affine:
-            nn.init.ones_(self.weight)
-            nn.init.zeros_(self.bias)
-    
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """
-        Apply LayerNorm to the input tensor.
-        
-        Args:
-            input: Input tensor to normalize
-            
-        Returns:
-            Normalized output tensor
-        """
-        # Handle different input shapes
-        if input.dim() == 2:
-            # Direct 2D case - most efficient path
-            return FusedLayerNormFunction.apply(
-                input, self.normalized_shape, self.weight, self.bias, self.eps
-            )
-        elif input.dim() == 3:
-            # 3D case - reshape to 2D, process, reshape back
-            batch_size, seq_len, hidden_size = input.shape
-            input_2d = input.view(-1, hidden_size)
-            output_2d = FusedLayerNormFunction.apply(
-                input_2d, self.normalized_shape, self.weight, self.bias, self.eps
-            )
-            return output_2d.view(batch_size, seq_len, hidden_size)
-        else:
-            # Fall back to PyTorch implementation for other shapes
-            return F.layer_norm(
-                input, self.normalized_shape, self.weight, self.bias, self.eps
-            )
-    
-    def extra_repr(self) -> str:
-        """String representation of the module."""
-        return '{normalized_shape}, eps={eps}, elementwise_affine={elementwise_affine}'.format(
-            **self.__dict__
-        )
-    
-    @torch.jit.unused
-    def estimate_memory_usage(self, batch_size: int) -> int:
-        """
-        Estimate memory usage for given batch size.
-        
-        Args:
-            batch_size: Batch size to estimate for
-            
-        Returns:
-            Estimated memory usage in bytes
-        """
-        hidden_size = self.normalized_shape[0]
-        use_mixed_precision = self.weight.dtype == torch.float16 if self.weight is not None else False
-        return fused_layernorm_cuda.get_memory_usage(batch_size, hidden_size, use_mixed_precision)
-    
-    @torch.jit.unused
-    def get_performance_hints(self, input_shape: Tuple[int, ...]) -> str:
-        """
-        Get performance optimization hints for given input shape.
-        
-        Args:
-            input_shape: Shape of input tensor
-            
-        Returns:
-            String containing performance hints
-        """
-        if len(input_shape) >= 2:
-            batch_size = input_shape[0] if len(input_shape) == 2 else input_shape[0] * input_shape[1]
-            hidden_size = input_shape[-1]
-            return fused_layernorm_cuda.get_performance_hints(batch_size, hidden_size)
-        return "Unable to analyze performance for given input shape"
-
-
-def fused_layer_norm(input: torch.Tensor, normalized_shape: Tuple[int, ...],
-                     weight: Optional[torch.Tensor] = None,
-                     bias: Optional[torch.Tensor] = None,
-                     eps: float = 1e-5) -> torch.Tensor:
-    """
-    Functional interface for fused LayerNorm.
-    
-    This provides a functional API similar to F.layer_norm but using
-    our optimized CUDA implementation.
-    
-    Args:
-        input: Input tensor to normalize
-        normalized_shape: Shape over which to normalize
-        weight: Optional scale parameter
-        bias: Optional shift parameter
-        eps: Small value for numerical stability
-        
-    Returns:
-        Normalized output tensor
-    """
-    # Handle 2D inputs directly
-    if input.dim() == 2 and len(normalized_shape) == 1 and normalized_shape[0] == input.size(1):
-        return FusedLayerNormFunction.apply(input, normalized_shape, weight, bias, eps)
-    
-    # Handle 3D inputs by reshaping
-    if input.dim() == 3 and len(normalized_shape) == 1 and normalized_shape[0] == input.size(2):
-        batch_size, seq_len, hidden_size = input.shape
-        input_2d = input.view(-1, hidden_size)
-        output_2d = FusedLayerNormFunction.apply(input_2d, normalized_shape, weight, bias, eps)
-        return output_2d.view(batch_size, seq_len, hidden_size)
-    
-    # Fall back to PyTorch for other cases
-    return F.layer_norm(input, normalized_shape, weight, bias, eps)
-
-
-# Monkey-patch torch.nn.LayerNorm for easy experimentation
-def replace_torch_layernorm():
-    """Replace torch.nn.LayerNorm with FusedLayerNorm globally."""
-    torch.nn.LayerNorm = FusedLayerNorm
-    print("Successfully replaced torch.nn.LayerNorm with FusedLayerNorm")
-
-
-def restore_torch_layernorm():
-    """Restore original torch.nn.LayerNorm."""
-    import importlib
-    torch.nn.LayerNorm = importlib.import_module('torch.nn.modules.normalization').LayerNorm
-    print("Restored original torch.nn.LayerNorm")
+            count += replace_layernorm(child)
+    return count

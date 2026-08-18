@@ -1,73 +1,27 @@
-/*
- * Header file for Fused LayerNorm CUDA operators
- * 
- * Provides function declarations and common definitions used across
- * the CUDA implementation and C++ bindings.
- */
+// Shared declaration between the two translation units of the extension:
+//   csrc/bindings.cpp            -- Python bindings, argument validation, reshape to/from 2-D
+//   csrc/layernorm_cuda_kernel.cu -- the CUDA kernel and its launcher (defined below)
+#pragma once
 
-#ifndef FUSED_LAYERNORM_H
-#define FUSED_LAYERNORM_H
+#include <ATen/ATen.h>
 
-#include <torch/extension.h>
-#include <vector>
-
-// CUDA kernel launch functions
-void layernorm_forward_cuda(
-    at::Tensor input,
-    at::Tensor gamma,
-    at::Tensor beta,
-    at::Tensor output,
-    at::Tensor mean,
-    at::Tensor rstd,
-    float epsilon);
-
-void layernorm_backward_cuda(
-    at::Tensor grad_output,
-    at::Tensor input,
-    at::Tensor mean,
-    at::Tensor rstd,
-    at::Tensor gamma,
-    at::Tensor grad_input,
-    at::Tensor grad_gamma,
-    at::Tensor grad_beta);
-
-// C++ interface functions
-std::vector<at::Tensor> layernorm_forward(
-    at::Tensor input,
-    at::Tensor gamma,
-    at::Tensor beta,
-    float epsilon);
-
-std::vector<at::Tensor> layernorm_backward(
-    at::Tensor grad_output,
-    at::Tensor input,
-    at::Tensor mean,
-    at::Tensor rstd,
-    at::Tensor gamma,
-    at::Tensor beta,
-    std::array<bool, 3> output_mask);
-
-// Utility functions
-int64_t get_memory_usage(
-    int batch_size,
-    int hidden_size,
-    bool use_mixed_precision);
-
-std::string get_performance_hints(
-    int batch_size,
-    int hidden_size);
-
-// Configuration constants
-constexpr float DEFAULT_EPSILON = 1e-5f;
-constexpr int MAX_GRID_SIZE = 65535;
-constexpr int PREFERRED_BLOCK_SIZE = 256;
-
-// Performance profiling utilities
-struct KernelProfile {
-    float forward_time_ms;
-    float backward_time_ms;
-    int64_t memory_allocated;
-    int64_t memory_reserved;
-};
-
-#endif // FUSED_LAYERNORM_H
+// Launches the fused LayerNorm(+GELU) kernel on the current CUDA stream.
+//
+// Preconditions (checked by the caller in bindings.cpp, NOT here):
+//   * input2d  : contiguous CUDA tensor of shape (M, N), dtype float32/float64/float16/bfloat16
+//   * output2d : contiguous CUDA tensor with the same shape/dtype/device as input2d
+//   * weight_or_undefined / bias_or_undefined : either an undefined at::Tensor (affine term
+//     omitted) or a contiguous 1-D CUDA tensor of length N with input2d's dtype/device.
+//     They are independent: weight-only and bias-only are both valid.
+//   * eps      : added to the biased variance before rsqrt
+//   * gelu     : if true, apply GELU to the normalized value before storing
+//   * gelu_tanh: only meaningful when gelu is true; false = erf GELU, true = tanh approximation
+//
+// M == 0 or N == 0 is a no-op (nothing is launched).
+void layernorm_cuda_launch(const at::Tensor& input2d,
+                           const at::Tensor& weight_or_undefined,
+                           const at::Tensor& bias_or_undefined,
+                           at::Tensor& output2d,
+                           double eps,
+                           bool gelu,
+                           bool gelu_tanh);

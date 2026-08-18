@@ -1,29 +1,36 @@
+"""fused_layernorm — a small forward-only fused LayerNorm (+GELU) CUDA kernel for PyTorch.
+
+Public API:
+
+* :func:`layer_norm` / :func:`layer_norm_gelu` — ``F.layer_norm``-shaped
+  functions that use the CUDA kernel when it is available and applicable and
+  fall back to PyTorch otherwise (always when gradients are required; the kernel
+  has no backward pass).
+* :class:`LayerNorm` — ``torch.nn.LayerNorm`` subclass routing through
+  :func:`layer_norm`; :meth:`LayerNorm.from_torch` wraps an existing module
+  sharing its parameters.
+* :func:`replace_layernorm` — opt-in, per-model replacement of exact
+  ``nn.LayerNorm`` submodules.  Nothing global is monkeypatched.
+* :func:`is_available` — whether the compiled extension and CUDA are usable.
+
+Importing this package never requires the compiled extension or a GPU.
 """
-Fused LayerNorm CUDA Package
 
-High-performance drop-in replacement for torch.nn.LayerNorm with CUDA acceleration.
-"""
+from .layernorm import (
+    LayerNorm,
+    is_available,
+    layer_norm,
+    layer_norm_gelu,
+    replace_layernorm,
+)
 
-from .layernorm import FusedLayerNorm, fused_layer_norm, replace_torch_layernorm, restore_torch_layernorm
-from .functional import FusedLayerNormFunction
-
-__version__ = "1.0.0"
-__author__ = "Your Name"
-__email__ = "your.email@example.com"
+__version__ = "0.2.0"
 
 __all__ = [
-    "FusedLayerNorm",
-    "FusedLayerNormFunction", 
-    "fused_layer_norm",
-    "replace_torch_layernorm",
-    "restore_torch_layernorm",
+    "LayerNorm",
+    "is_available",
+    "layer_norm",
+    "layer_norm_gelu",
+    "replace_layernorm",
+    "__version__",
 ]
-
-# Check CUDA availability
-import torch
-if not torch.cuda.is_available():
-    import warnings
-    warnings.warn(
-        "CUDA is not available. FusedLayerNorm will fall back to PyTorch's native implementation.",
-        RuntimeWarning
-    )
