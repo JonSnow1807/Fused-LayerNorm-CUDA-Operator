@@ -61,6 +61,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import os
 import platform
 import statistics
 import subprocess
@@ -193,6 +194,18 @@ def _gpu_slug(device_name: str) -> str:
     return "".join(ch if ch.isalnum() else "-" for ch in slug).strip("-") or "gpu"
 
 
+def _nvidia_driver() -> Optional[str]:
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        return out.strip().splitlines()[0]
+    except Exception:
+        return None
+
+
 def collect_metadata(repo_root: Path, ext_module: Any) -> Dict[str, Any]:
     props = torch.cuda.get_device_properties(torch.cuda.current_device())
     device_name = torch.cuda.get_device_name()
@@ -217,6 +230,10 @@ def collect_metadata(repo_root: Path, ext_module: Any) -> Dict[str, Any]:
         "git_dirty": _git_dirty(repo_root),
         "extension_version": getattr(ext_module, "__version__", None),
         "argv": sys.argv[1:],
+        "nvidia_driver": _nvidia_driver(),
+        # Environment that changes what gets measured; None when unset.
+        "env_torch_cuda_arch_list": os.environ.get("TORCH_CUDA_ARCH_LIST"),
+        "env_fused_layernorm_force_kernel": os.environ.get("FUSED_LAYERNORM_FORCE_KERNEL"),
     }
 
 

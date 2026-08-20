@@ -21,6 +21,8 @@
 #include <c10/cuda/CUDAGuard.h>        // c10::cuda::CUDAGuard
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 
 #include "layernorm.h"
 
@@ -152,12 +154,15 @@ __global__ void layernorm_kernel(const scalar_t* __restrict__ input,
 // Two changes relative to layernorm_kernel above, both copied from what
 // PyTorch's own vectorized_layer_norm_kernel does:
 //   * 16-byte aligned vector loads/stores (kVecWidth elements: 4 x float,
-//     8 x half/bfloat16, 2 x double). A contiguous row with
-//     N % kVecWidth == 0 starts at a multiple of 16 bytes (row offset =
-//     row*N elements; allocations are at least 256-byte aligned), so the
-//     cast to Vec below is always valid on this path. 8-wide fp16 loads
-//     matter: with 4-wide (8-byte) loads the fp16 kernel measured ~0.8x of
-//     PyTorch at large shapes, with 16-byte loads it is at parity or ahead.
+//     8 x half/bfloat16, 2 x double). The launcher takes this path only when
+//     N % kVecWidth == 0 AND every data pointer is 16-byte aligned (checked
+//     at runtime - contiguity alone does not guarantee alignment, see the
+//     launcher); given both, every row offset (row*N elements) is a multiple
+//     of 16 bytes and the Vec casts below are valid. 8-wide fp16 loads
+//     matter: with 4-wide (8-byte) loads the fp16 kernel measured well
+//     behind PyTorch at large shapes, with 16-byte loads it is at parity or
+//     ahead (interim development measurement; the committed data covers the
+//     shipped 16-byte version).
 //   * Single-pass Welford statistics instead of two passes: mean and the
 //     centred sum of squares (m2) are maintained together while the row is
 //     read ONCE, then partial (n, mean, m2) triples are merged across the
@@ -188,7 +193,10 @@ template <typename acc_t>
 struct Welford {
   acc_t mean = 0;
   acc_t m2 = 0;
-  acc_t n = 0;  // acc_t (not int): keeps the merge below branch-light
+  acc_t n = 0;  // acc_t (not int): keeps the merge below branch-light. For float
+                // acc_t the count stays exact up to 2^24 elements per row; the
+                // final variance divides by the exact int64 N either way.
+                // (PyTorch's Welford kernel makes the same trade.)
 };
 
 template <typename acc_t>
@@ -279,15 +287,21 @@ __global__ void layernorm_vec_kernel(const scalar_t* __restrict__ input,
   const acc_t mean = s_mean;
   const acc_t rstd = s_rstd;
 
-  // Normalise pass (the row re-read is mostly an L1/L2 hit).
+  // Normalise pass (the row re-read is mostly an L1/L2 hit). gamma/beta are
+  // loaded as whole vectors up front rather than re-indexed per element, so
+  // their traffic is one 16-byte load each regardless of what the compiler
+  // does about common-subexpression elimination.
   for (int64_t i = tid; i < nvec; i += stride) {
     const V x = X[i];
+    V gv, bv;
+    if (gamma) gv = G[i];
+    if (beta) bv = B[i];
     V y;
 #pragma unroll
     for (int k = 0; k < kW; ++k) {
       acc_t v = (static_cast<acc_t>(x.v[k]) - mean) * rstd;
-      if (gamma) v *= static_cast<acc_t>(G[i].v[k]);
-      if (beta) v += static_cast<acc_t>(B[i].v[k]);
+      if (gamma) v *= static_cast<acc_t>(gv.v[k]);
+      if (beta) v += static_cast<acc_t>(bv.v[k]);
       if (kGelu) v = use_tanh ? gelu_tanh<acc_t>(v) : gelu_erf<acc_t>(v);
       y.v[k] = static_cast<scalar_t>(v);
     }
@@ -317,18 +331,40 @@ void layernorm_cuda_launch(const at::Tensor& input2d,
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   // Kernel choice (measured on an A100-SXM4-40GB, see benchmarks/results/):
-  //   * Many rows and N % 4 == 0: the vectorised single-pass kernel with small
-  //     (<= 256 thread) blocks. With thousands of one-block rows the grid
-  //     alone fills every SM, and per-row efficiency (4-wide loads, one fewer
-  //     pass) decides throughput.
+  //   * Many rows, vectorisable layout: the vectorised single-pass kernel with
+  //     small (<= 256 thread) blocks. With thousands of one-block rows the
+  //     grid alone fills every SM, and per-row efficiency (16-byte loads, one
+  //     fewer pass) decides throughput.
   //   * Few rows: the scalar two-pass kernel with up to 1024 threads per row.
   //     With only M <= a-few-hundred blocks the GPU is latency-bound and wide
   //     blocks put more threads to work; the vectorised kernel measured slower
   //     here for every tested shape.
-  //   * Odd or tiny N: the scalar kernel (the 4-wide path needs N % 4 == 0).
+  //   * Everything else: the scalar kernel. "Vectorisable" means N is a
+  //     multiple of the per-dtype 16-byte vector width (4 x fp32, 8 x
+  //     fp16/bf16, 2 x fp64) AND every tensor's data pointer is 16-byte
+  //     aligned. Contiguity alone does not guarantee alignment: a contiguous
+  //     1-D slice like base[1:] keeps its storage offset, so its data_ptr can
+  //     sit 4 bytes into an allocation; PyTorch's own vectorised kernel makes
+  //     the same runtime alignment check.
   constexpr int64_t kVecMinRows = 256;
   const int64_t vw = 16 / input2d.element_size();  // kVecWidth of the dispatched dtype
-  const bool vec = (N % vw == 0) && (N >= 128) && (M >= kVecMinRows);
+  const auto aligned16 = [](const void* p) {
+    return (reinterpret_cast<uintptr_t>(p) & 15) == 0;
+  };
+  const bool ptrs_ok =
+      aligned16(input2d.data_ptr()) && aligned16(output2d.data_ptr()) &&
+      (!weight_or_undefined.defined() || aligned16(weight_or_undefined.data_ptr())) &&
+      (!bias_or_undefined.defined() || aligned16(bias_or_undefined.data_ptr()));
+  bool vec = ptrs_ok && (N % vw == 0) && (N >= 128) && (M >= kVecMinRows);
+
+  // Debug/benchmark override: FUSED_LAYERNORM_FORCE_KERNEL=scalar|vec pins the
+  // kernel choice (used to produce the committed scalar-baseline results).
+  // Forcing "vec" still requires the layout to be vectorisable at all.
+  static const char* const force_kernel = std::getenv("FUSED_LAYERNORM_FORCE_KERNEL");
+  if (force_kernel != nullptr) {
+    if (std::strcmp(force_kernel, "scalar") == 0) vec = false;
+    if (std::strcmp(force_kernel, "vec") == 0) vec = ptrs_ok && (N % vw == 0);
+  }
 
   // Block size, always a power of two (keeps the reductions' warp arithmetic
   // exact). Scalar path: smallest power of two >= N, clamped to [32, 1024] (a

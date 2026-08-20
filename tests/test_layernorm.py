@@ -431,6 +431,36 @@ def test_kernel_matches_layer_norm(shape: Tuple[int, int], dtype: torch.dtype) -
 
 @pytest.mark.cuda
 @requires_cuda_ext
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16], ids=str)
+def test_kernel_unaligned_storage_offset(dtype: torch.dtype) -> None:  # (1)
+    """Contiguous inputs whose data_ptr is NOT 16-byte aligned.
+
+    A 1-D slice like ``base[1:]`` is contiguous but keeps its storage offset,
+    so ``.contiguous()`` is a no-op and the tensor's data pointer sits
+    ``itemsize`` bytes into the allocation.  The vectorised kernel's 16-byte
+    loads would fault on such a pointer; the launcher must detect it and fall
+    back to the scalar kernel.  M >= 256 and N % 8 == 0 so that, alignment
+    aside, the shape would take the vectorised path.  Regression test: before
+    the alignment check this crashed with "misaligned address".
+    """
+    m, n = 512, 1024
+    base = torch.randn(m * n + 1, dtype=dtype, device=DEVICE)
+    x = base[1:].view(m, n)  # contiguous, data_ptr offset by one element
+    assert x.is_contiguous() and x.data_ptr() % 16 != 0
+    w, b = _affine(n, dtype)
+    _assert_close(_ext.layernorm(x, w, b, 1e-5), _ref_layer_norm(x, w, b, 1e-5))
+    # Same trick on the affine parameters only (input stays aligned).
+    wb = torch.randn(2 * n + 2, dtype=dtype, device=DEVICE)
+    w_off, b_off = wb[1 : n + 1], wb[n + 2 :]
+    assert w_off.data_ptr() % 16 != 0
+    x2 = _randn((m, n), dtype)
+    _assert_close(
+        _ext.layernorm(x2, w_off, b_off, 1e-5), _ref_layer_norm(x2, w_off, b_off, 1e-5)
+    )
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
 def test_kernel_float64_ill_conditioned_rows() -> None:  # (1)
     """Rows with mean 1000 and std 1e-3: statistics must be accumulated in double.
 

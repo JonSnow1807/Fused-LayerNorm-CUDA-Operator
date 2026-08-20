@@ -6,19 +6,20 @@ byte-identical for provenance), and committed result files (`results/`).
 
 ## Status of the numbers in this repository (read this first)
 
-* **No results from `bench_layernorm.py` are committed yet.** The script has
-  never been run: it was written on a machine without a GPU, so there is no
-  kernel-time, CUDA-graph or kernel-bandwidth measurement for any version of
-  the kernel anywhere in this repository (the single 26.4 GB/s figure in
-  `results/2025-08-17_a100_eager_latency/` is derived from a host-bound
-  single-call time, not from kernel time).
-* The **only committed numbers at all** are the eager per-call latencies in
-  [`results/2025-08-17_a100_eager_latency/`](results/2025-08-17_a100_eager_latency/README.md),
-  taken with the predecessor of the current kernel (commit `12dee09`; same
+* **Kernel-time, CUDA-graph and bandwidth measurements exist since 2026‑08‑20:**
+  [`results/2026-08-20_a100-40gb_kernel_time/`](results/2026-08-20_a100-40gb_kernel_time/README.md)
+  holds `bench_layernorm.py` output (fp32 and fp16, plus a scalar-kernel
+  baseline run) for the v0.3.0 kernels on an A100‑SXM4‑40GB; its README states
+  the commands, commit and environment. These are the only numbers that speak
+  about kernel speed.
+* The eager per-call latencies in
+  [`results/2025-08-17_a100_eager_latency/`](results/2025-08-17_a100_eager_latency/README.md)
+  were taken with the predecessor of the current kernel (commit `12dee09`; same
   block-per-row two-pass design, different block sizes / accumulation / stream).
   They were produced by the legacy scripts and measure host dispatch + launch
-  cost, not kernel time; the README in that folder explains what they do and do
-  not show. The kernel in this tree has not been run anywhere yet.
+  cost, not kernel time (the single 26.4 GB/s figure there is derived from a
+  host-bound single-call time); the README in that folder explains what they do
+  and do not show.
 * [`results/historical_2025-07_deleted_kernel/`](results/historical_2025-07_deleted_kernel/README.md)
   describes a different, since-deleted kernel and applies to nothing in the
   current tree.

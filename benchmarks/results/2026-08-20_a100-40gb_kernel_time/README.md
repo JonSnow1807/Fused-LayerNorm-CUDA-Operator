@@ -27,5 +27,6 @@ takes its two-kernel fallback), 1.02-1.17x at 2048x4096 / 4096x4096 /
 4096x12288 — and slower on 3: 512x1024 (0.88x), 8192x1024 and 16384x768
 (0.98x). fp16: faster or at parity everywhere except 512x1024 (0.69x),
 2048x4096 (0.89x) and 4096x4096 (0.97x). Eager per-call latency is
-1.7-2.6x lower than `nn.LayerNorm` at every shape below ~2 MiB (host-overhead
-bound; see docs/methodology.md).
+2.2-2.6x lower than `nn.LayerNorm` at every shape below ~2 MiB (host-overhead
+bound; see docs/methodology.md). Every number quoted in the top-level README's
+2026 section is taken from the JSONs in this directory.

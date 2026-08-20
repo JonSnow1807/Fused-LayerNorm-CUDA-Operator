@@ -23,6 +23,16 @@ NVIDIA A100‑SXM4‑40GB (PyTorch 2.13.0+cu129, CUDA toolkit 12.9).
 * Version 0.2.0 → 0.3.0 (`pyproject.toml`, `setup.py`, bindings, package, test).
 * No API changes; the scalar kernel and every 0.2.0 behaviour (dtype rules, fallbacks, forward‑only
   semantics) are unchanged.
+* Still missing: the CI workflow (compile‑only nvcc job + CPU‑only pytest job) that the 0.2.0 notes
+  promised in a follow‑up commit was never built; the promise is repeated here rather than silently
+  dropped.
+* Post‑release hardening after an adversarial review of this release: the vectorised path now
+  checks 16‑byte *pointer* alignment at launch instead of assuming it from contiguity — a
+  contiguous 1‑D slice (`base[1:]`) keeps its storage offset, and such an input (or weight/bias)
+  previously crashed the vectorised kernel with "misaligned address"; a regression test covers it.
+  Added `FUSED_LAYERNORM_FORCE_KERNEL=scalar|vec` (debug/benchmark override), driver/env fields in
+  the benchmark metadata, and a scalar‑baseline benchmark run so every number this repository
+  quotes about the scalar kernel points at a committed file.
 
 ## 0.2.0 — 2026‑08‑18 — honesty rewrite
 

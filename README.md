@@ -119,28 +119,29 @@ that says anything about the kernel itself. fp32:
 
 | rows × N | `F.layer_norm` kernel_us | ours kernel_us | kernel ratio | eager: `nn.LayerNorm` → ours |
 |---|---:|---:|---:|---|
-| 32 × 768 | 6.00 | 4.53 | **1.32×** | 13.5 → 6.3 µs |
-| 32 × 1024 | 5.16 | 3.99 | **1.29×** | 18.7 → 8.7 µs |
-| 32 × 4096 | 8.81 | 5.79 | **1.52×** | 19.2 → 8.8 µs |
-| 17 × 1023 | 7.20 | 3.66 | **1.97×** | 22.9 → 8.9 µs |
-| 128 × 4096 | 10.50 | 7.51 | **1.40×** | 19.0 → 8.7 µs |
-| 512 × 1024 | 6.86 | 7.80 | 0.88× | 19.0 → 8.7 µs |
-| 2048 × 4096 | 67.81 | 62.71 | **1.08×** | 68.8 → 63.5 µs |
-| 4096 × 4096 | 140.09 | 119.75 | **1.17×** | 141.1 → 122.5 µs |
-| 8192 × 1024 | 57.65 | 59.04 | 0.98× | 58.3 → 59.7 µs |
+| 32 × 768 | 6.00 | 4.53 | **1.32×** | 14.4 → 6.4 µs |
+| 32 × 1024 | 5.16 | 3.99 | **1.29×** | 19.5 → 8.8 µs |
+| 32 × 4096 | 8.81 | 5.79 | **1.52×** | 19.8 → 8.9 µs |
+| 17 × 1023 | 7.20 | 3.66 | **1.97×** | 23.4 → 9.0 µs |
+| 128 × 4096 | 10.50 | 7.51 | **1.40×** | 19.8 → 8.8 µs |
+| 512 × 1024 | 6.86 | 7.80 | 0.88× | 19.9 → 8.7 µs |
+| 2048 × 4096 | 67.81 | 62.71 | **1.08×** | 68.8 → 63.6 µs |
+| 4096 × 4096 | 140.09 | 119.75 | **1.17×** | 141.4 → 123.2 µs |
+| 8192 × 1024 | 57.65 | 59.04 | 0.98× | 58.5 → 59.9 µs |
 | 16384 × 768 | 87.86 | 89.41 | 0.98× | 87.9 → 89.5 µs |
-| 4096 × 12288 | 456.24 | 446.15 | **1.02×** | 457.2 → 446.8 µs |
+| 4096 × 12288 | 456.24 | 446.15 | **1.02×** | 457.5 → 447.1 µs |
 
 How to read it:
 
 * **Small/latency‑bound shapes (≲ 2 MiB): the kernel is 1.3–2.0× faster than PyTorch's** and the
-  eager per‑call latency is 1.7–2.6× lower than `nn.LayerNorm` (the eager gap is mostly dispatch
+  eager per‑call latency is 2.2–2.6× lower than `nn.LayerNorm` (the eager gap is mostly dispatch
   and allocation overhead — `nn.LayerNorm` also allocates `mean`/`rstd` — which is the effect the
   2025 numbers below measured without knowing it). The 17 × 1023 row is where PyTorch falls back to
   its two‑kernel path (odd N); this kernel handles odd N in one launch.
-* **Large memory‑bound shapes: mostly at or ahead of parity** (1.02–1.17× at N = 4096/12288, where
-  this kernel reaches 1 070–1 130 GB/s ≈ 69–73 % of the 1 555 GB/s datasheet peak vs PyTorch's
-  988–990), **slightly behind on narrow rows with many of them** (0.88–0.98× at N = 768/1024).
+* **Large memory‑bound shapes: mostly at or ahead of parity** (1.02–1.17× at N = 4096/12288;
+  effective bandwidth 1 071 vs 990 GB/s at 2048 × 4096, 1 121 vs 958 at 4096 × 4096, 903 vs 883 at
+  4096 × 12288 — 58–72 % of the 1 555 GB/s datasheet peak for this kernel),
+  **slightly behind on narrow rows with many of them** (0.88–0.98× at N = 768/1024).
   The remaining loss cases are block‑scheduling, not algorithmic: both sides run the same
   single‑pass Welford + 16‑byte‑load algorithm there.
 * fp16 (same directory): faster or at parity everywhere except 512 × 1024 (0.69×), 2048 × 4096
@@ -148,7 +149,7 @@ How to read it:
 * CUDA‑graph capture works (`graph_us` in the JSON tracks `kernel_us` closely for every shape),
   which also retires the old "cannot be captured" caveat.
 * The August‑2025 claim this repository once made — "1.86–2.66× faster" — was an eager‑latency
-  ratio. On this GPU the measured eager ratio against `nn.LayerNorm` is 1.9–2.6× below ~2 MiB, so
+  ratio. On this GPU the measured eager ratio against `nn.LayerNorm` is 2.2–2.6× below ~2 MiB, so
   the *number* was reproducible; what was wrong was calling it kernel speed. The kernel‑time
   ratios above are the defensible version of the claim, and they required adding the vectorised
   kernel: the two‑pass scalar kernel alone measured 0.42–0.98× at the large shapes.
