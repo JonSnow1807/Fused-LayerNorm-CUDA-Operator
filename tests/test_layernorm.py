@@ -164,7 +164,7 @@ def _no_mha_fastpath() -> Iterator[None]:
 
 
 def test_package_exports_and_version() -> None:
-    assert fused_layernorm.__version__ == "0.2.0"
+    assert fused_layernorm.__version__ == "0.3.0"
     for name in ("layer_norm", "layer_norm_gelu", "LayerNorm", "replace_layernorm", "is_available"):
         assert hasattr(fused_layernorm, name)
     assert isinstance(fused_layernorm.is_available(), bool)

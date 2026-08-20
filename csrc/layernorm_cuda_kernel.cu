@@ -145,6 +145,158 @@ __global__ void layernorm_kernel(const scalar_t* __restrict__ input,
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// Vectorised single-pass variant (used when N is a multiple of the 16-byte
+// vector width, N >= 128 and there are >= 256 rows; see the launcher).
+//
+// Two changes relative to layernorm_kernel above, both copied from what
+// PyTorch's own vectorized_layer_norm_kernel does:
+//   * 16-byte aligned vector loads/stores (kVecWidth elements: 4 x float,
+//     8 x half/bfloat16, 2 x double). A contiguous row with
+//     N % kVecWidth == 0 starts at a multiple of 16 bytes (row offset =
+//     row*N elements; allocations are at least 256-byte aligned), so the
+//     cast to Vec below is always valid on this path. 8-wide fp16 loads
+//     matter: with 4-wide (8-byte) loads the fp16 kernel measured ~0.8x of
+//     PyTorch at large shapes, with 16-byte loads it is at parity or ahead.
+//   * Single-pass Welford statistics instead of two passes: mean and the
+//     centred sum of squares (m2) are maintained together while the row is
+//     read ONCE, then partial (n, mean, m2) triples are merged across the
+//     block with Chan's parallel update. This removes one full read of the
+//     row; at memory-bound shapes (thousands of rows) that read is the
+//     difference between ~0.5x and ~1x of PyTorch's kernel time.
+//
+// The normalise pass still re-reads the row (as does PyTorch's kernel); that
+// second read mostly hits L1/L2 because the same block just read it.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Elements per 16-byte vector load for each dtype.
+template <typename scalar_t>
+constexpr int kVecWidth = 16 / sizeof(scalar_t);
+
+template <typename scalar_t>
+struct alignas(16) Vec {
+  scalar_t v[kVecWidth<scalar_t>];
+};
+
+// Welford partial aggregate: n elements seen, their mean, and the centred sum
+// of squares m2 = sum((x - mean)^2). Merging two aggregates (Chan et al.) is
+// exact for the same reason the two-pass form is: no E[x^2] - E[x]^2
+// cancellation ever occurs.
+template <typename acc_t>
+struct Welford {
+  acc_t mean = 0;
+  acc_t m2 = 0;
+  acc_t n = 0;  // acc_t (not int): keeps the merge below branch-light
+};
+
+template <typename acc_t>
+__device__ __forceinline__ Welford<acc_t> welfordMerge(Welford<acc_t> a, Welford<acc_t> b) {
+  const acc_t n = a.n + b.n;
+  if (n == 0) return a;  // both empty; avoids 0/0 below
+  const acc_t delta = b.mean - a.mean;
+  Welford<acc_t> out;
+  out.n = n;
+  out.mean = a.mean + delta * (b.n / n);
+  out.m2 = a.m2 + b.m2 + delta * delta * (a.n * b.n / n);
+  return out;
+}
+
+// Same reduction shape as blockReduceSum above (and the same contract:
+// blockDim.x a power of two in [32, 1024], result valid on warp 0, one
+// __syncthreads inside, callers separate consecutive calls with a barrier).
+template <typename acc_t>
+__device__ __forceinline__ Welford<acc_t> warpReduceWelford(Welford<acc_t> w) {
+  for (int offset = kWarpSize / 2; offset > 0; offset /= 2) {
+    Welford<acc_t> o;
+    o.mean = __shfl_xor_sync(0xffffffffu, w.mean, offset);
+    o.m2 = __shfl_xor_sync(0xffffffffu, w.m2, offset);
+    o.n = __shfl_xor_sync(0xffffffffu, w.n, offset);
+    w = welfordMerge(w, o);
+  }
+  return w;
+}
+
+template <typename acc_t>
+__device__ __forceinline__ Welford<acc_t> blockReduceWelford(Welford<acc_t> w) {
+  static __shared__ Welford<acc_t> shared[kMaxThreads / kWarpSize];
+  const int lane = threadIdx.x % kWarpSize;
+  const int wid = threadIdx.x / kWarpSize;
+
+  w = warpReduceWelford<acc_t>(w);
+  if (lane == 0) shared[wid] = w;
+  __syncthreads();
+
+  const unsigned int nwarps = blockDim.x / kWarpSize;
+  w = (threadIdx.x < nwarps) ? shared[lane] : Welford<acc_t>{};
+  if (wid == 0) w = warpReduceWelford<acc_t>(w);
+  return w;
+}
+
+template <typename scalar_t, typename acc_t, bool kGelu>
+__global__ void layernorm_vec_kernel(const scalar_t* __restrict__ input,
+                                     scalar_t* __restrict__ output,
+                                     const scalar_t* __restrict__ gamma,
+                                     const scalar_t* __restrict__ beta,
+                                     int64_t N,  // multiple of kVecWidth<scalar_t>
+                                     acc_t eps,
+                                     bool use_tanh) {
+  using V = Vec<scalar_t>;
+  constexpr int kW = kVecWidth<scalar_t>;
+  const int64_t row = blockIdx.x;
+  const int tid = threadIdx.x;
+  const int stride = blockDim.x;
+  const int64_t nvec = N / kW;
+
+  const V* X = reinterpret_cast<const V*>(input + row * N);
+  V* Y = reinterpret_cast<V*>(output + row * N);
+  const V* G = reinterpret_cast<const V*>(gamma);  // may be null
+  const V* B = reinterpret_cast<const V*>(beta);   // may be null
+
+  __shared__ acc_t s_mean;
+  __shared__ acc_t s_rstd;
+
+  // Single pass: per-thread Welford over a strided slice of the row.
+  Welford<acc_t> w;
+  for (int64_t i = tid; i < nvec; i += stride) {
+    const V x = X[i];
+#pragma unroll
+    for (int k = 0; k < kW; ++k) {
+      const acc_t xv = static_cast<acc_t>(x.v[k]);
+      w.n += 1;
+      const acc_t delta = xv - w.mean;
+      w.mean += delta / w.n;
+      w.m2 += delta * (xv - w.mean);
+    }
+  }
+  w = blockReduceWelford<acc_t>(w);
+  if (tid == 0) {
+    s_mean = w.mean;
+    s_rstd = rsqrt(w.m2 / static_cast<acc_t>(N) + eps);
+  }
+  __syncthreads();
+  const acc_t mean = s_mean;
+  const acc_t rstd = s_rstd;
+
+  // Normalise pass (the row re-read is mostly an L1/L2 hit).
+  for (int64_t i = tid; i < nvec; i += stride) {
+    const V x = X[i];
+    V y;
+#pragma unroll
+    for (int k = 0; k < kW; ++k) {
+      acc_t v = (static_cast<acc_t>(x.v[k]) - mean) * rstd;
+      if (gamma) v *= static_cast<acc_t>(G[i].v[k]);
+      if (beta) v += static_cast<acc_t>(B[i].v[k]);
+      if (kGelu) v = use_tanh ? gelu_tanh<acc_t>(v) : gelu_erf<acc_t>(v);
+      y.v[k] = static_cast<scalar_t>(v);
+    }
+    Y[i] = y;
+  }
+}
+
+}  // namespace
+
 void layernorm_cuda_launch(const at::Tensor& input2d,
                            const at::Tensor& weight_or_undefined,
                            const at::Tensor& bias_or_undefined,
@@ -164,12 +316,33 @@ void layernorm_cuda_launch(const at::Tensor& input2d,
   c10::cuda::CUDAGuard device_guard(input2d.device());
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-  // Block size: smallest power of two in [32, 1024] that is >= N. A fixed 1024-thread block
-  // would leave most warps idle for short rows (e.g. N = 64 would run 2 useful warps and 30
-  // idle ones through every barrier); rows longer than 1024 are handled by the strided
-  // loops in the kernel. Power of two keeps blockReduceSum's warp arithmetic exact.
-  int threads = kWarpSize;
-  while (threads < N && threads < kMaxThreads) threads *= 2;
+  // Kernel choice (measured on an A100-SXM4-40GB, see benchmarks/results/):
+  //   * Many rows and N % 4 == 0: the vectorised single-pass kernel with small
+  //     (<= 256 thread) blocks. With thousands of one-block rows the grid
+  //     alone fills every SM, and per-row efficiency (4-wide loads, one fewer
+  //     pass) decides throughput.
+  //   * Few rows: the scalar two-pass kernel with up to 1024 threads per row.
+  //     With only M <= a-few-hundred blocks the GPU is latency-bound and wide
+  //     blocks put more threads to work; the vectorised kernel measured slower
+  //     here for every tested shape.
+  //   * Odd or tiny N: the scalar kernel (the 4-wide path needs N % 4 == 0).
+  constexpr int64_t kVecMinRows = 256;
+  const int64_t vw = 16 / input2d.element_size();  // kVecWidth of the dispatched dtype
+  const bool vec = (N % vw == 0) && (N >= 128) && (M >= kVecMinRows);
+
+  // Block size, always a power of two (keeps the reductions' warp arithmetic
+  // exact). Scalar path: smallest power of two >= N, clamped to [32, 1024] (a
+  // fixed 1024-thread block would leave most warps idle for short rows, e.g.
+  // N = 64 would run 2 useful warps and 30 idle ones through every barrier).
+  // Vectorised path: about two 16-byte vectors per thread, clamped to
+  // [64, 256] — 128 threads for fp32 N = 1024 matches PyTorch's
+  // vectorised-kernel block size, and larger rows saturate with 256 threads;
+  // bigger blocks measured slower on narrow rows, smaller ones on wide rows.
+  const int64_t items = vec ? (N / vw + 1) / 2 : N;
+  const int floor_threads = vec ? 2 * kWarpSize : kWarpSize;
+  const int cap = vec ? 256 : kMaxThreads;
+  int threads = floor_threads;
+  while (threads < items && threads < cap) threads *= 2;
 
   const dim3 grid(static_cast<unsigned int>(M));
   const dim3 block(static_cast<unsigned int>(threads));
@@ -184,7 +357,15 @@ void layernorm_cuda_launch(const at::Tensor& input2d,
         const scalar_t* b =
             bias_or_undefined.defined() ? bias_or_undefined.data_ptr<scalar_t>() : nullptr;
         const acc_t eps_acc = static_cast<acc_t>(eps);
-        if (gelu) {
+        if (vec) {
+          if (gelu) {
+            layernorm_vec_kernel<scalar_t, acc_t, true>
+                <<<grid, block, 0, stream>>>(x, y, g, b, N, eps_acc, gelu_tanh);
+          } else {
+            layernorm_vec_kernel<scalar_t, acc_t, false>
+                <<<grid, block, 0, stream>>>(x, y, g, b, N, eps_acc, /*use_tanh=*/false);
+          }
+        } else if (gelu) {
           layernorm_kernel<scalar_t, acc_t, true>
               <<<grid, block, 0, stream>>>(x, y, g, b, N, eps_acc, gelu_tanh);
         } else {

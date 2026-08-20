@@ -27,7 +27,7 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 setup(
     name="fused_layernorm",
-    version="0.2.0",
+    version="0.3.0",
     packages=["fused_layernorm"],
     python_requires=">=3.9",
     ext_modules=[

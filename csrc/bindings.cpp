@@ -7,7 +7,7 @@
 // Exposed module (name comes from TORCH_EXTENSION_NAME, i.e. "fused_layernorm_cuda"):
 //   layernorm(input, weight=None, bias=None, eps=1e-5) -> Tensor
 //   layernorm_gelu(input, weight=None, bias=None, eps=1e-5, approximate="none") -> Tensor
-//   __version__ == "0.2.0"
+//   __version__ == "0.3.0"
 //
 // Both functions are FORWARD ONLY: the returned tensor has no grad_fn.
 
@@ -119,5 +119,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("input"), py::arg("weight") = py::none(), py::arg("bias") = py::none(),
         py::arg("eps") = 1e-5, py::arg("approximate") = "none");
 
-  m.attr("__version__") = "0.2.0";
+  m.attr("__version__") = "0.3.0";
 }

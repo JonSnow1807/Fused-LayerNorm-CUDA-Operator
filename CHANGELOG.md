@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.0 — 2026‑08‑20 — first hardware run + vectorised kernel
+
+The 0.2.0 tree, written on a machine without CUDA, was built and run for the first time on an
+NVIDIA A100‑SXM4‑40GB (PyTorch 2.13.0+cu129, CUDA toolkit 12.9).
+
+* **Verified:** all 102 tests pass unmodified; CUDA‑graph capture works (the 0.2.0 caveat about it
+  being untested is retired); `bench_layernorm.py` ran without changes and its fp32/fp16 output is
+  committed under `benchmarks/results/2026-08-20_a100-40gb_kernel_time/`.
+* **Measured, then fixed:** the scalar two‑pass kernel was 1.3–2.0× faster than PyTorch's kernel at
+  small/latency‑bound shapes but 0.42–0.98× at large memory‑bound ones — exactly the hypothesis
+  recorded in the 0.2.0 README (three passes over the row, scalar loads). Added a second kernel:
+  16‑byte vectorised loads (4 × fp32 / 8 × fp16‑bf16 / 2 × fp64) + single‑pass Welford statistics
+  with Chan's parallel merge — the same algorithm as PyTorch's `vectorized_layer_norm_kernel` — and
+  a measured selection heuristic (vectorised iff N divisible by the vector width, N ≥ 128, M ≥ 256;
+  block size ≈ two vectors per thread in [64, 256]). Result (fp32 kernel time): faster than PyTorch
+  on 8 of 11 benchmark shapes (1.02–1.97×), 0.88–0.98× on the remaining three (many narrow rows).
+  The README's measurement section has the full table.
+* fp16 initially used 4‑element (8‑byte) loads and measured ~0.8× of PyTorch at large shapes;
+  switching to 16‑byte loads (8 halves) brought it to parity or ahead except at three shapes
+  (0.69×/0.89×/0.97×), which the README lists.
+* Version 0.2.0 → 0.3.0 (`pyproject.toml`, `setup.py`, bindings, package, test).
+* No API changes; the scalar kernel and every 0.2.0 behaviour (dtype rules, fallbacks, forward‑only
+  semantics) are unchanged.
+
 ## 0.2.0 — 2026‑08‑18 — honesty rewrite
 
 This release is a correction, not a feature release. An audit of the repository as of commit

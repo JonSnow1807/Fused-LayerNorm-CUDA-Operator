@@ -1,0 +1,1731 @@
+{
+  "metadata": {
+    "timestamp": "2026-08-20T20:11:59+00:00",
+    "torch_version": "2.13.0+cu129",
+    "cuda_version": "12.9",
+    "cudnn_version": 92000,
+    "gpu_name": "NVIDIA A100-SXM4-40GB",
+    "gpu_sm_count": 108,
+    "gpu_total_memory_bytes": 42406903808,
+    "gpu_peak_bandwidth_gb_s": 1555.0,
+    "cpu_model": "AMD EPYC 7J13 64-Core Processor (x86_64)",
+    "python_version": "3.12.13",
+    "platform": "Linux-6.8.0-60-generic-x86_64-with-glibc2.39",
+    "git_commit": "ff598176d56907a1e7a7f2f152e8a1bad98d057d",
+    "git_dirty": true,
+    "extension_version": "0.2.0",
+    "argv": []
+  },
+  "settings": {
+    "iters": 200,
+    "reps": 20,
+    "warmup": 50,
+    "eps": 1e-05,
+    "dtype": "float32",
+    "graphs": true,
+    "shapes": [
+      [
+        32,
+        768
+      ],
+      [
+        32,
+        1024
+      ],
+      [
+        32,
+        4096
+      ],
+      [
+        17,
+        1023
+      ],
+      [
+        128,
+        4096
+      ],
+      [
+        512,
+        1024
+      ],
+      [
+        2048,
+        4096
+      ],
+      [
+        4096,
+        4096
+      ],
+      [
+        8192,
+        1024
+      ],
+      [
+        16384,
+        768
+      ],
+      [
+        4096,
+        12288
+      ]
+    ]
+  },
+  "results": [
+    {
+      "M": 32,
+      "N": 768,
+      "dtype": "float32",
+      "bytes_moved": 202752,
+      "correctness": {
+        "passed": true,
+        "detail": "max_abs_diff=7.153e-07 (atol=1e-05, rtol=0.0001)"
+      },
+      "candidates": {
+        "nn.LayerNorm (module)": {
+          "error": null,
+          "eager_us": 14.408655000579529,
+          "eager_us_min": 14.31417500043608,
+          "eager_us_max": 14.673284999844327,
+          "eager_us_reps": [
+            14.522274998398643,
+            14.488029999029095,
+            14.673284999844327,
+            14.360974998908205,
+            14.393930000551336,
+            14.478479999979754,
+            14.31417500043608,
+            14.344725000228209,
+            14.370179999332322,
+            14.423380000607722,
+            14.465285000824224,
+            14.381819999016443,
+            14.390425001238327,
+            14.368875001764536,
+            14.504435000617377,
+            14.42872999859901,
+            14.541979999194155,
+            14.387475000603445,
+            14.381685000444122,
+            14.506734999031323
+          ],
+          "kernel_us": 5.929554999999985,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 5.397999882698059,
+          "graph_us_min": 5.390719771385193,
+          "graph_us_max": 5.412160158157349,
+          "graph_error": null,
+          "bandwidth_gb_s": 34.193459711563605,
+          "utilization_pct": 2.1989363158561805
+        },
+        "F.layer_norm": {
+          "error": null,
+          "eager_us": 11.132079999924827,
+          "eager_us_min": 11.081754998940596,
+          "eager_us_max": 11.290659999758645,
+          "eager_us_reps": [
+            11.1802550009088,
+            11.128054998152948,
+            11.182504999851517,
+            11.240155001814855,
+            11.150604998420022,
+            11.090150001109578,
+            11.290659999758645,
+            11.119255000267003,
+            11.134149999634246,
+            11.130010000215407,
+            11.113255000054778,
+            11.214659998586285,
+            11.108149999472516,
+            11.108604999208183,
+            11.242855000546115,
+            11.081754998940596,
+            11.123454999051319,
+            11.180904998582264,
+            11.254510000071605,
+            11.087305001638015
+          ],
+          "kernel_us": 6.001369999999991,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 5.460160076618195,
+          "graph_us_min": 5.455039739608765,
+          "graph_us_max": 5.525919795036316,
+          "graph_error": null,
+          "bandwidth_gb_s": 33.78428592138134,
+          "utilization_pct": 2.172622888834813
+        },
+        "fused_layernorm_cuda.layernorm": {
+          "error": null,
+          "eager_us": 6.412595000711008,
+          "eager_us_min": 6.360950001180754,
+          "eager_us_max": 6.46840000172233,
+          "eager_us_reps": [
+            6.405895001080353,
+            6.463900001563161,
+            6.363590000546537,
+            6.46840000172233,
+            6.391140000232554,
+            6.385439999121445,
+            6.364990001657134,
+            6.360950001180754,
+            6.436295000185055,
+            6.437350000396691,
+            6.444645000556193,
+            6.369950001499092,
+            6.436994999603485,
+            6.460394999976415,
+            6.378890000178217,
+            6.450500000028114,
+            6.3796949984862295,
+            6.453999999394,
+            6.419295000341663,
+            6.389950001448597
+          ],
+          "kernel_us": 4.534059999999999,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "layernorm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "layernorm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void (anonymous namespace)::layernorm_kernel<float, float, false>(float const*, float*, float const*, float const*, long, float, bool)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 3.9660799503326416,
+          "graph_us_min": 3.9531201124191284,
+          "graph_us_max": 4.021599888801575,
+          "graph_error": null,
+          "bandwidth_gb_s": 44.71753792406806,
+          "utilization_pct": 2.875725911515631
+        }
+      }
+    },
+    {
+      "M": 32,
+      "N": 1024,
+      "dtype": "float32",
+      "bytes_moved": 270336,
+      "correctness": {
+        "passed": true,
+        "detail": "max_abs_diff=9.537e-07 (atol=1e-05, rtol=0.0001)"
+      },
+      "candidates": {
+        "nn.LayerNorm (module)": {
+          "error": null,
+          "eager_us": 19.542945000239342,
+          "eager_us_min": 19.37293999844769,
+          "eager_us_max": 19.806109999080945,
+          "eager_us_reps": [
+            19.70824999943943,
+            19.806109999080945,
+            19.657445000120788,
+            19.74915499886265,
+            19.638000001123146,
+            19.37293999844769,
+            19.54689500053064,
+            19.45469000020239,
+            19.510044999151432,
+            19.514949999575038,
+            19.579150000481604,
+            19.511250000050495,
+            19.487644999571785,
+            19.48969500062958,
+            19.599194999955216,
+            19.538994999948045,
+            19.687305000388733,
+            19.616550000591815,
+            19.508445000155916,
+            19.470140000521496
+          ],
+          "kernel_us": 5.141140000000023,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 4.728479981422424,
+          "graph_us_min": 4.723840057849884,
+          "graph_us_max": 4.746080040931702,
+          "graph_error": null,
+          "bandwidth_gb_s": 52.58289017610856,
+          "utilization_pct": 3.381536345730454
+        },
+        "F.layer_norm": {
+          "error": null,
+          "eager_us": 15.889584999513318,
+          "eager_us_min": 15.765110001666471,
+          "eager_us_max": 16.02377000153865,
+          "eager_us_reps": [
+            15.989560001798964,
+            16.02377000153865,
+            15.876909999406053,
+            15.93816499962486,
+            15.82185999950525,
+            15.902259999620583,
+            15.869065000515548,
+            15.925269999570446,
+            15.967059998729383,
+            15.91261500152541,
+            15.836364998449426,
+            15.836160000617383,
+            15.946870000789204,
+            15.839510001569579,
+            15.85930999908669,
+            15.765110001666471,
+            15.92906000041694,
+            15.925010000046314,
+            15.84735999813347,
+            15.876264999405976
+          ],
+          "kernel_us": 5.1593600000000075,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 4.746080040931702,
+          "graph_us_min": 4.74016010761261,
+          "graph_us_max": 4.753440022468567,
+          "graph_error": null,
+          "bandwidth_gb_s": 52.397196551510184,
+          "utilization_pct": 3.3695946335376323
+        },
+        "fused_layernorm_cuda.layernorm": {
+          "error": null,
+          "eager_us": 8.747025000275244,
+          "eager_us_min": 8.649749997857725,
+          "eager_us_max": 9.0175100012857,
+          "eager_us_reps": [
+            8.785999998508487,
+            9.0175100012857,
+            8.808249999674445,
+            8.75834999988001,
+            8.717999999134918,
+            8.666700000503624,
+            8.7469000004603,
+            8.762304998981563,
+            8.743200000935758,
+            8.723250000457483,
+            8.77320499967027,
+            8.725044999664533,
+            8.649749997857725,
+            8.711655000297469,
+            8.744755000407167,
+            8.727945000828186,
+            8.747150000090187,
+            8.754860000408371,
+            8.839399999942543,
+            8.77395499855993
+          ],
+          "kernel_us": 3.9852099999999835,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "layernorm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "layernorm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void (anonymous namespace)::layernorm_kernel<float, float, false>(float const*, float*, float const*, float const*, long, float, bool)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 3.5359199345111847,
+          "graph_us_min": 3.521600067615509,
+          "graph_us_max": 3.5980799794197083,
+          "graph_error": null,
+          "bandwidth_gb_s": 67.83481924415555,
+          "utilization_pct": 4.362367797051804
+        }
+      }
+    },
+    {
+      "M": 32,
+      "N": 4096,
+      "dtype": "float32",
+      "bytes_moved": 1081344,
+      "correctness": {
+        "passed": true,
+        "detail": "max_abs_diff=9.537e-07 (atol=1e-05, rtol=0.0001)"
+      },
+      "candidates": {
+        "nn.LayerNorm (module)": {
+          "error": null,
+          "eager_us": 19.746327500342886,
+          "eager_us_min": 19.60010499942655,
+          "eager_us_max": 20.09670500001448,
+          "eager_us_reps": [
+            19.960805000209803,
+            19.97080999899481,
+            20.09670500001448,
+            19.795005000560195,
+            19.725750000816333,
+            19.696649999332294,
+            19.79655000013736,
+            19.794004999766912,
+            19.842304998292093,
+            19.76690499986944,
+            19.864154999140737,
+            19.92056000062803,
+            19.65029500070159,
+            19.614744999216782,
+            19.622094998794637,
+            19.60010499942655,
+            19.721099999969738,
+            19.716000001608336,
+            19.711755001026177,
+            19.681499998114305
+          ],
+          "kernel_us": 8.813340000000016,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 8.424240052700043,
+          "graph_us_min": 8.414720296859741,
+          "graph_us_max": 8.483039736747742,
+          "graph_error": null,
+          "bandwidth_gb_s": 122.6940070393288,
+          "utilization_pct": 7.890289841757479
+        },
+        "F.layer_norm": {
+          "error": null,
+          "eager_us": 16.23002000087581,
+          "eager_us_min": 16.120665000016743,
+          "eager_us_max": 16.47842500005936,
+          "eager_us_reps": [
+            16.423419999682665,
+            16.3320200022099,
+            16.47842500005936,
+            16.19412500076578,
+            16.194869999708317,
+            16.263224999875092,
+            16.326575000675803,
+            16.197570000713313,
+            16.18786999870281,
+            16.239015001247026,
+            16.342170001735212,
+            16.33546999983082,
+            16.320320000886568,
+            16.26951999924131,
+            16.128219999700377,
+            16.120665000016743,
+            16.17616499970609,
+            16.193120000025374,
+            16.221025000504596,
+            16.18447000055312
+          ],
+          "kernel_us": 8.812609999999987,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 8.424239754676819,
+          "graph_us_min": 8.412479758262634,
+          "graph_us_max": 8.436959981918335,
+          "graph_error": null,
+          "bandwidth_gb_s": 122.70417050113436,
+          "utilization_pct": 7.890943440587418
+        },
+        "fused_layernorm_cuda.layernorm": {
+          "error": null,
+          "eager_us": 8.901402499077449,
+          "eager_us_min": 8.850705000895687,
+          "eager_us_max": 9.14630499892155,
+          "eager_us_reps": [
+            8.918050000374933,
+            8.910555000056775,
+            9.14630499892155,
+            8.960805000697292,
+            8.990050000647898,
+            8.907554999950662,
+            8.91755000111516,
+            8.88979999899675,
+            8.895249998204235,
+            8.92705000069327,
+            8.924955000111368,
+            8.868754998729855,
+            8.850705000895687,
+            8.877605000634503,
+            8.936255001117388,
+            8.876150000105554,
+            8.878849998836813,
+            8.894005000001926,
+            8.860749999257678,
+            8.869099999628816
+          ],
+          "kernel_us": 5.7887999999999815,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "layernorm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "layernorm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void (anonymous namespace)::layernorm_kernel<float, float, false>(float const*, float*, float const*, float const*, long, float, bool)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 5.367519855499268,
+          "graph_us_min": 5.361120104789734,
+          "graph_us_max": 5.3779202699661255,
+          "graph_error": null,
+          "bandwidth_gb_s": 186.79933665008352,
+          "utilization_pct": 12.01281907717579
+        }
+      }
+    },
+    {
+      "M": 17,
+      "N": 1023,
+      "dtype": "float32",
+      "bytes_moved": 147312,
+      "correctness": {
+        "passed": true,
+        "detail": "max_abs_diff=9.537e-07 (atol=1e-05, rtol=0.0001)"
+      },
+      "candidates": {
+        "nn.LayerNorm (module)": {
+          "error": null,
+          "eager_us": 23.403512500408397,
+          "eager_us_min": 23.214380000808887,
+          "eager_us_max": 23.66784500054564,
+          "eager_us_reps": [
+            23.492785001053562,
+            23.431785000411764,
+            23.381084999982704,
+            23.37183500003448,
+            23.594844999479392,
+            23.377729999083385,
+            23.3584850002444,
+            23.302285001136624,
+            23.346330001459137,
+            23.328830000082235,
+            23.458335001578234,
+            23.29243500071243,
+            23.42594000083409,
+            23.456485000679095,
+            23.66784500054564,
+            23.214380000808887,
+            23.366435000298225,
+            23.475890000099753,
+            23.451540000678506,
+            23.439829999460926
+          ],
+          "kernel_us": 7.200775000000025,
+          "kernel_launches_per_call": 2.0,
+          "kernel_names": {
+            "RowwiseMomentsCUDAKernel": 200,
+            "LayerNormForwardCUDAKernel": 200
+          },
+          "kernel_names_per_call": {
+            "RowwiseMomentsCUDAKernel": 1.0,
+            "LayerNormForwardCUDAKernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::RowwiseMomentsCUDAKernel<float, float, false>(long, float, float const*, float*, float*)": 200,
+            "void at::native::(anonymous namespace)::LayerNormForwardCUDAKernel<float, float, false>(long, float const*, float const*, float const*, float const*, float const*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 6.46696001291275,
+          "graph_us_min": 6.455519795417786,
+          "graph_us_max": 6.501439809799194,
+          "graph_error": null,
+          "bandwidth_gb_s": 20.457797945359978,
+          "utilization_pct": 1.3156140157787768
+        },
+        "F.layer_norm": {
+          "error": null,
+          "eager_us": 19.899432500096736,
+          "eager_us_min": 19.709949999651144,
+          "eager_us_max": 20.261864999611134,
+          "eager_us_reps": [
+            19.709949999651144,
+            19.908604999727686,
+            19.81554999929358,
+            19.880954998825473,
+            19.923354998354625,
+            19.892005000201607,
+            19.860504999087425,
+            19.774904999394494,
+            19.830599999295373,
+            19.863104998876224,
+            19.9445100020057,
+            19.97001000063392,
+            19.945500000631,
+            20.261864999611134,
+            19.964159998835385,
+            19.98435500127016,
+            19.906859999991866,
+            19.91115999999238,
+            19.863700001678808,
+            19.854754998505086
+          ],
+          "kernel_us": 7.197205000000032,
+          "kernel_launches_per_call": 2.0,
+          "kernel_names": {
+            "RowwiseMomentsCUDAKernel": 200,
+            "LayerNormForwardCUDAKernel": 200
+          },
+          "kernel_names_per_call": {
+            "RowwiseMomentsCUDAKernel": 1.0,
+            "LayerNormForwardCUDAKernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::RowwiseMomentsCUDAKernel<float, float, false>(long, float, float const*, float*, float*)": 200,
+            "void at::native::(anonymous namespace)::LayerNormForwardCUDAKernel<float, float, false>(long, float const*, float const*, float const*, float const*, float const*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 6.470719873905182,
+          "graph_us_min": 6.463199853897095,
+          "graph_us_max": 6.498240232467651,
+          "graph_error": null,
+          "bandwidth_gb_s": 20.467945542748794,
+          "utilization_pct": 1.31626659438899
+        },
+        "fused_layernorm_cuda.layernorm": {
+          "error": null,
+          "eager_us": 8.977530000038314,
+          "eager_us_min": 8.938349999425554,
+          "eager_us_max": 9.014154998112645,
+          "eager_us_reps": [
+            8.995959999538172,
+            8.972005000487115,
+            8.998449998216529,
+            8.957109998846136,
+            9.014154998112645,
+            9.00700999864057,
+            8.98141000106989,
+            9.006650000173977,
+            9.0047050002795,
+            8.980249999694934,
+            8.968755000751116,
+            8.938349999425554,
+            8.973405001597712,
+            8.97990500106971,
+            8.970305000275403,
+            8.94335499879162,
+            8.967549999852054,
+            8.975154999006918,
+            8.987310000065918,
+            8.973600001809245
+          ],
+          "kernel_us": 3.658780000000014,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "layernorm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "layernorm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void (anonymous namespace)::layernorm_kernel<float, float, false>(float const*, float*, float const*, float const*, long, float, bool)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 3.2430399954319,
+          "graph_us_min": 3.2328000664711,
+          "graph_us_max": 3.2998400926589966,
+          "graph_error": null,
+          "bandwidth_gb_s": 40.26260119493368,
+          "utilization_pct": 2.5892348035327126
+        }
+      }
+    },
+    {
+      "M": 128,
+      "N": 4096,
+      "dtype": "float32",
+      "bytes_moved": 4227072,
+      "correctness": {
+        "passed": true,
+        "detail": "max_abs_diff=9.537e-07 (atol=1e-05, rtol=0.0001)"
+      },
+      "candidates": {
+        "nn.LayerNorm (module)": {
+          "error": null,
+          "eager_us": 19.81122500069432,
+          "eager_us_min": 19.62359500112143,
+          "eager_us_max": 20.166614999652666,
+          "eager_us_reps": [
+            19.947155001318606,
+            20.02275999984704,
+            19.94775499952084,
+            19.91330500004551,
+            19.973349999418133,
+            19.800395000402204,
+            19.760805000714754,
+            19.687750000230153,
+            19.65539499906299,
+            19.73169999928359,
+            19.62359500112143,
+            19.73189999944225,
+            19.882900000993686,
+            20.166614999652666,
+            19.81290000003355,
+            19.724505000340287,
+            19.953804999204294,
+            19.701204998909816,
+            19.809550001355092,
+            19.827749999876687
+          ],
+          "kernel_us": 10.499795000000004,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 10.078400373458862,
+          "graph_us_min": 10.068639516830444,
+          "graph_us_max": 10.128320455551147,
+          "graph_error": null,
+          "bandwidth_gb_s": 402.5861457295117,
+          "utilization_pct": 25.889784291286926
+        },
+        "F.layer_norm": {
+          "error": null,
+          "eager_us": 16.487399999505215,
+          "eager_us_min": 16.38023000168687,
+          "eager_us_max": 16.617129999758617,
+          "eager_us_reps": [
+            16.48247499815625,
+            16.442230000848213,
+            16.422725000211358,
+            16.483274998790876,
+            16.437970000424684,
+            16.596979999121686,
+            16.491525000219553,
+            16.451975000109087,
+            16.449979998469644,
+            16.456674998153176,
+            16.38023000168687,
+            16.49592999910965,
+            16.588680000495515,
+            16.61248000118576,
+            16.552874999433698,
+            16.448875001060514,
+            16.594324999914534,
+            16.545330001918046,
+            16.617129999758617,
+            16.599079999650712
+          ],
+          "kernel_us": 10.495790000000024,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 10.05407989025116,
+          "graph_us_min": 10.046559572219849,
+          "graph_us_max": 10.06432056427002,
+          "graph_error": null,
+          "bandwidth_gb_s": 402.73976518203875,
+          "utilization_pct": 25.89966335575812
+        },
+        "fused_layernorm_cuda.layernorm": {
+          "error": null,
+          "eager_us": 8.818625000230895,
+          "eager_us_min": 8.732549999876937,
+          "eager_us_max": 9.113109999816515,
+          "eager_us_reps": [
+            8.884654998837505,
+            8.843805001106375,
+            8.839955000894406,
+            8.819449999464268,
+            8.846844998515735,
+            8.817800000997522,
+            8.81539499914652,
+            8.777205000569666,
+            8.775710000463732,
+            8.880005000264646,
+            8.872905000316678,
+            9.113109999816515,
+            8.732549999876937,
+            8.787350000147853,
+            8.80855500099642,
+            8.766155001467268,
+            8.803155001260166,
+            8.827205001580296,
+            8.797604998562747,
+            8.82325500015213
+          ],
+          "kernel_us": 7.509024999999987,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "layernorm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "layernorm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void (anonymous namespace)::layernorm_kernel<float, float, false>(float const*, float*, float const*, float const*, long, float, bool)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 7.14464008808136,
+          "graph_us_min": 7.1377599239349365,
+          "graph_us_max": 7.20911979675293,
+          "graph_error": null,
+          "bandwidth_gb_s": 562.9322049134219,
+          "utilization_pct": 36.2014279687088
+        }
+      }
+    },
+    {
+      "M": 512,
+      "N": 1024,
+      "dtype": "float32",
+      "bytes_moved": 4202496,
+      "correctness": {
+        "passed": true,
+        "detail": "max_abs_diff=9.537e-07 (atol=1e-05, rtol=0.0001)"
+      },
+      "candidates": {
+        "nn.LayerNorm (module)": {
+          "error": null,
+          "eager_us": 19.873802499432713,
+          "eager_us_min": 19.65964500186601,
+          "eager_us_max": 20.224710001457424,
+          "eager_us_reps": [
+            19.951599999785685,
+            20.000204999632842,
+            19.883850000042003,
+            20.224710001457424,
+            19.95385500094926,
+            19.77300500129786,
+            19.801849998657417,
+            19.90125500014983,
+            19.73995000071227,
+            19.796655001300678,
+            19.911254998987715,
+            19.988154999737162,
+            20.029259999319038,
+            19.749850000607694,
+            19.765305000873923,
+            19.662695001443353,
+            19.65964500186601,
+            19.875999998930638,
+            19.87160499993479,
+            19.662300001073163
+          ],
+          "kernel_us": 6.913295000000026,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 6.4103201031684875,
+          "graph_us_min": 6.403520107269287,
+          "graph_us_max": 6.480479836463928,
+          "graph_error": null,
+          "bandwidth_gb_s": 607.8861093009895,
+          "utilization_pct": 39.09235429588357
+        },
+        "F.layer_norm": {
+          "error": null,
+          "eager_us": 16.33877500012204,
+          "eager_us_min": 16.224969999711902,
+          "eager_us_max": 16.506024999216606,
+          "eager_us_reps": [
+            16.30521999913981,
+            16.278419998343452,
+            16.299370001888747,
+            16.347020000466728,
+            16.46887500101002,
+            16.44282500137706,
+            16.388824999467033,
+            16.426175000106014,
+            16.340424999725656,
+            16.346069999144675,
+            16.506024999216606,
+            16.337125000518427,
+            16.30196999940381,
+            16.224969999711902,
+            16.236120000030496,
+            16.325125000093976,
+            16.39347500031363,
+            16.426479999154253,
+            16.258820000984997,
+            16.28942500019548
+          ],
+          "kernel_us": 6.858009999999991,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 6.404159963130951,
+          "graph_us_min": 6.392639875411987,
+          "graph_us_max": 6.472319960594177,
+          "graph_error": null,
+          "bandwidth_gb_s": 612.786508039505,
+          "utilization_pct": 39.40749247842476
+        },
+        "fused_layernorm_cuda.layernorm": {
+          "error": null,
+          "eager_us": 8.715175000588715,
+          "eager_us_min": 8.674854998389492,
+          "eager_us_max": 8.862755000791367,
+          "eager_us_reps": [
+            8.862755000791367,
+            8.758454998769594,
+            8.756400000038411,
+            8.763655000620929,
+            8.674854998389492,
+            8.691949999501958,
+            8.678750000399305,
+            8.691294999607635,
+            8.748549998927047,
+            8.714450000297802,
+            8.702050001829775,
+            8.704644999397715,
+            8.751249999932043,
+            8.683749999818247,
+            8.695095000348374,
+            8.687499998814019,
+            8.715900000879628,
+            8.780749999459658,
+            8.739449999666249,
+            8.760245000303257
+          ],
+          "kernel_us": 7.7957099999999935,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "layernorm_vec_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "layernorm_vec_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void (anonymous namespace)::layernorm_vec_kernel<float, float, false>(float const*, float*, float const*, float const*, long, float, bool)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 7.383759915828705,
+          "graph_us_min": 7.37887978553772,
+          "graph_us_max": 7.455040216445923,
+          "graph_error": null,
+          "bandwidth_gb_s": 539.0780313787973,
+          "utilization_pct": 34.667397516321365
+        }
+      }
+    },
+    {
+      "M": 2048,
+      "N": 4096,
+      "dtype": "float32",
+      "bytes_moved": 67141632,
+      "correctness": {
+        "passed": true,
+        "detail": "max_abs_diff=1.431e-06 (atol=1e-05, rtol=0.0001)"
+      },
+      "candidates": {
+        "nn.LayerNorm (module)": {
+          "error": null,
+          "eager_us": 68.81377500008057,
+          "eager_us_min": 68.69501999972272,
+          "eager_us_max": 68.9803800014488,
+          "eager_us_reps": [
+            68.80242500074019,
+            68.77832499867509,
+            68.80057499984105,
+            68.7938199985183,
+            68.88877500159651,
+            68.9803800014488,
+            68.88973000059195,
+            68.77317000089533,
+            68.86257500127613,
+            68.78972499862357,
+            68.87452000000849,
+            68.82512499942095,
+            68.90307500043491,
+            68.93587999911688,
+            68.79122000100324,
+            68.85692499963625,
+            68.73171500046737,
+            68.77692500211197,
+            68.82742000016151,
+            68.69501999972272
+          ],
+          "kernel_us": 67.76398500000006,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 67.17439889907837,
+          "graph_us_min": 67.05584049224854,
+          "graph_us_max": 67.2435188293457,
+          "graph_error": null,
+          "bandwidth_gb_s": 990.8158736532384,
+          "utilization_pct": 63.71806261435617
+        },
+        "F.layer_norm": {
+          "error": null,
+          "eager_us": 68.75947249909586,
+          "eager_us_min": 68.65047000019331,
+          "eager_us_max": 68.90392500054077,
+          "eager_us_reps": [
+            68.76126999941334,
+            68.68467000003875,
+            68.74342499941122,
+            68.74582000136797,
+            68.7302749997798,
+            68.75767499877838,
+            68.78482500042082,
+            68.90392500054077,
+            68.78837499925794,
+            68.78302499899291,
+            68.79496999999901,
+            68.7793749989396,
+            68.7231699998847,
+            68.65047000019331,
+            68.7914200011619,
+            68.780125000103,
+            68.77071500184684,
+            68.74621999941155,
+            68.72542499877454,
+            68.74987499941199
+          ],
+          "kernel_us": 67.80619000000002,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 67.1664810180664,
+          "graph_us_min": 67.04895973205566,
+          "graph_us_max": 67.27471828460693,
+          "graph_error": null,
+          "bandwidth_gb_s": 990.1991543839875,
+          "utilization_pct": 63.67840221118891
+        },
+        "fused_layernorm_cuda.layernorm": {
+          "error": null,
+          "eager_us": 63.5876249998546,
+          "eager_us_min": 63.49645000000237,
+          "eager_us_max": 63.66560000060417,
+          "eager_us_reps": [
+            63.54025000064212,
+            63.656410000021424,
+            63.58695000017178,
+            63.63360000023022,
+            63.62320999869553,
+            63.649359999544686,
+            63.55084999995597,
+            63.64890499980902,
+            63.58829999953741,
+            63.56249999953434,
+            63.594609998745,
+            63.58535499884965,
+            63.5315499994249,
+            63.617850000809995,
+            63.49760000148308,
+            63.66560000060417,
+            63.5807499998009,
+            63.588509999590315,
+            63.526304998049454,
+            63.49645000000237
+          ],
+          "kernel_us": 62.706235,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "layernorm_vec_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "layernorm_vec_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void (anonymous namespace)::layernorm_vec_kernel<float, float, false>(float const*, float*, float const*, float const*, long, float, bool)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 62.37247943878174,
+          "graph_us_min": 62.28096008300781,
+          "graph_us_max": 62.52096176147461,
+          "graph_error": null,
+          "bandwidth_gb_s": 1070.7329502401155,
+          "utilization_pct": 68.85742445274055
+        }
+      }
+    },
+    {
+      "M": 4096,
+      "N": 4096,
+      "dtype": "float32",
+      "bytes_moved": 134250496,
+      "correctness": {
+        "passed": true,
+        "detail": "max_abs_diff=1.431e-06 (atol=1e-05, rtol=0.0001)"
+      },
+      "candidates": {
+        "nn.LayerNorm (module)": {
+          "error": null,
+          "eager_us": 141.35750499917776,
+          "eager_us_min": 141.2325299997974,
+          "eager_us_max": 141.55183499951818,
+          "eager_us_reps": [
+            141.4942799988239,
+            141.36942500044825,
+            141.2578300005407,
+            141.3552299982257,
+            141.2325299997974,
+            141.29557999922326,
+            141.30837500033522,
+            141.27397500033112,
+            141.26508500112323,
+            141.55183499951818,
+            141.49033500189034,
+            141.43338499934544,
+            141.39507999971102,
+            141.37828000002628,
+            141.3401250010793,
+            141.35978000012983,
+            141.47742999966795,
+            141.3452299993878,
+            141.54238500168503,
+            141.26182500149298
+          ],
+          "kernel_us": 140.30719499999995,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 139.32447910308838,
+          "graph_us_min": 139.2193603515625,
+          "graph_us_max": 139.44432258605957,
+          "graph_error": null,
+          "bandwidth_gb_s": 956.8325843874225,
+          "utilization_pct": 61.53264208279244
+        },
+        "F.layer_norm": {
+          "error": null,
+          "eager_us": 141.3202025003102,
+          "eager_us_min": 141.20463000153904,
+          "eager_us_max": 141.50823500131082,
+          "eager_us_reps": [
+            141.3001799983249,
+            141.39512499923512,
+            141.21413000111716,
+            141.31112500081144,
+            141.35093000049892,
+            141.32927999980893,
+            141.27632500049003,
+            141.27163000011933,
+            141.26838000038333,
+            141.48713000167845,
+            141.3698800001839,
+            141.29653000054532,
+            141.2733299980573,
+            141.3762250012951,
+            141.20463000153904,
+            141.29687999911766,
+            141.50823500131082,
+            141.42993499945078,
+            141.35487499970623,
+            141.36508000092363
+          ],
+          "kernel_us": 140.09485000000004,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 139.33824062347412,
+          "graph_us_min": 139.2460823059082,
+          "graph_us_max": 139.43504333496094,
+          "graph_error": null,
+          "bandwidth_gb_s": 958.2828776361156,
+          "utilization_pct": 61.62590852965374
+        },
+        "fused_layernorm_cuda.layernorm": {
+          "error": null,
+          "eager_us": 123.17096749939083,
+          "eager_us_min": 122.62490000011894,
+          "eager_us_max": 123.62067499907425,
+          "eager_us_reps": [
+            122.88835499930428,
+            123.13135999875158,
+            123.26391499982492,
+            123.2039149999764,
+            123.5712749985396,
+            123.35026999835463,
+            122.94391500063284,
+            122.94055999973352,
+            122.62490000011894,
+            123.19231499986927,
+            123.10061499874791,
+            123.32456499962063,
+            123.18841500018607,
+            123.10670499800835,
+            123.15351999859558,
+            123.62067499907425,
+            123.29121499988105,
+            123.03580999969199,
+            123.04655999969327,
+            123.40551499846697
+          ],
+          "kernel_us": 119.74867999999995,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "layernorm_vec_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "layernorm_vec_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void (anonymous namespace)::layernorm_vec_kernel<float, float, false>(float const*, float*, float const*, float const*, long, float, bool)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 121.18631839752197,
+          "graph_us_min": 120.75743675231934,
+          "graph_us_max": 121.60703659057617,
+          "graph_error": null,
+          "bandwidth_gb_s": 1121.1020948205864,
+          "utilization_pct": 72.0965977376583
+        }
+      }
+    },
+    {
+      "M": 8192,
+      "N": 1024,
+      "dtype": "float32",
+      "bytes_moved": 67117056,
+      "correctness": {
+        "passed": true,
+        "detail": "max_abs_diff=9.537e-07 (atol=1e-05, rtol=0.0001)"
+      },
+      "candidates": {
+        "nn.LayerNorm (module)": {
+          "error": null,
+          "eager_us": 58.51138750017526,
+          "eager_us_min": 58.39983999976539,
+          "eager_us_max": 58.59918999931324,
+          "eager_us_reps": [
+            58.57434000063222,
+            58.49913000020024,
+            58.59918999931324,
+            58.477735001361,
+            58.540990000892634,
+            58.458334999613726,
+            58.47018999929787,
+            58.4795849999864,
+            58.522335000361636,
+            58.514735001153895,
+            58.505285001047014,
+            58.44358999866017,
+            58.51939000194761,
+            58.53534000152649,
+            58.508039999196626,
+            58.544035000522854,
+            58.48898000067493,
+            58.52458499930435,
+            58.39983999976539,
+            58.58209000052739
+          ],
+          "kernel_us": 57.72892000000001,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 56.85111999511719,
+          "graph_us_min": 56.764159202575684,
+          "graph_us_max": 56.90944194793701,
+          "graph_error": null,
+          "bandwidth_gb_s": 1162.6244869988907,
+          "utilization_pct": 74.76684803851387
+        },
+        "F.layer_norm": {
+          "error": null,
+          "eager_us": 58.468757499667845,
+          "eager_us_min": 58.384339999975055,
+          "eager_us_max": 58.53874000194992,
+          "eager_us_reps": [
+            58.53874000194992,
+            58.41038499966089,
+            58.48408500014557,
+            58.51674000041385,
+            58.50948499983133,
+            58.43763000029867,
+            58.46227999882103,
+            58.43453500119722,
+            58.384339999975055,
+            58.47523500051466,
+            58.507339999778196,
+            58.42788499876406,
+            58.41778000103659,
+            58.41513499944995,
+            58.48718499919414,
+            58.404935000453406,
+            58.48613499892963,
+            58.51793499914493,
+            58.49114000056943,
+            58.41194000140604
+          ],
+          "kernel_us": 57.652724999999975,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 56.85288190841675,
+          "graph_us_min": 56.779518127441406,
+          "graph_us_max": 56.93359851837158,
+          "graph_error": null,
+          "bandwidth_gb_s": 1164.1610348860358,
+          "utilization_pct": 74.86566140746211
+        },
+        "fused_layernorm_cuda.layernorm": {
+          "error": null,
+          "eager_us": 59.85104750038772,
+          "eager_us_min": 59.74121999997806,
+          "eager_us_max": 59.99517499958529,
+          "eager_us_reps": [
+            59.99517499958529,
+            59.86607500062746,
+            59.882665000259294,
+            59.74121999997806,
+            59.86011999993934,
+            59.8142699982418,
+            59.786970000459405,
+            59.83856500051843,
+            59.82320999919466,
+            59.85467000073186,
+            59.847425000043586,
+            59.89976999899227,
+            59.87831999846094,
+            59.8385150010472,
+            59.81281999993371,
+            59.842919999937294,
+            59.8817200011581,
+            59.812710001097,
+            59.905769999204495,
+            59.959819998312014
+          ],
+          "kernel_us": 59.03546000000006,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "layernorm_vec_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "layernorm_vec_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void (anonymous namespace)::layernorm_vec_kernel<float, float, false>(float const*, float*, float const*, float const*, long, float, bool)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 58.17055940628052,
+          "graph_us_min": 58.11728000640869,
+          "graph_us_max": 58.262882232666016,
+          "graph_error": null,
+          "bandwidth_gb_s": 1136.8939278189741,
+          "utilization_pct": 73.1121496989694
+        }
+      }
+    },
+    {
+      "M": 16384,
+      "N": 768,
+      "dtype": "float32",
+      "bytes_moved": 100669440,
+      "correctness": {
+        "passed": true,
+        "detail": "max_abs_diff=1.431e-06 (atol=1e-05, rtol=0.0001)"
+      },
+      "candidates": {
+        "nn.LayerNorm (module)": {
+          "error": null,
+          "eager_us": 87.90535499883845,
+          "eager_us_min": 87.83921000031114,
+          "eager_us_max": 88.12586499971076,
+          "eager_us_reps": [
+            87.8914049985724,
+            87.83921000031114,
+            87.93031000095652,
+            87.88425999910032,
+            87.8614600014771,
+            87.84455999830243,
+            87.84855500152844,
+            87.85475500189932,
+            87.84880500115833,
+            87.92390999815325,
+            88.00931499990838,
+            87.99976500085904,
+            87.89305499931288,
+            87.93016500021622,
+            87.89785499857317,
+            88.12586499971076,
+            88.07865999870046,
+            87.91285499910373,
+            88.07535999949323,
+            87.92040999878736
+          ],
+          "kernel_us": 87.82765500000004,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 86.31232261657715,
+          "graph_us_min": 86.27823829650879,
+          "graph_us_max": 86.37632369995117,
+          "graph_error": null,
+          "bandwidth_gb_s": 1146.2157335294899,
+          "utilization_pct": 73.71162273501542
+        },
+        "F.layer_norm": {
+          "error": null,
+          "eager_us": 87.84878000028584,
+          "eager_us_min": 87.80200499813873,
+          "eager_us_max": 87.96160499969119,
+          "eager_us_reps": [
+            87.81555499808746,
+            87.81865500168351,
+            87.811949999832,
+            87.8806650007391,
+            87.81465500078411,
+            87.91040999994948,
+            87.86550999957399,
+            87.81810500067877,
+            87.85115500131724,
+            87.96160499969119,
+            87.8545049999957,
+            87.85106000004816,
+            87.84370500052319,
+            87.80200499813873,
+            87.84650000052352,
+            87.8529100009473,
+            87.86945500105503,
+            87.86705499915115,
+            87.83426000036343,
+            87.84026000057565
+          ],
+          "kernel_us": 87.85842000000002,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 86.26575946807861,
+          "graph_us_min": 86.2235164642334,
+          "graph_us_max": 86.35791778564453,
+          "graph_error": null,
+          "bandwidth_gb_s": 1145.8143681618674,
+          "utilization_pct": 73.68581145735482
+        },
+        "fused_layernorm_cuda.layernorm": {
+          "error": null,
+          "eager_us": 89.53954749927107,
+          "eager_us_min": 89.47574000103486,
+          "eager_us_max": 89.61604499972964,
+          "eager_us_reps": [
+            89.52204500019434,
+            89.53944499808131,
+            89.49020000045493,
+            89.4774450011937,
+            89.4844949993967,
+            89.52034499998263,
+            89.47574000103486,
+            89.49393999955646,
+            89.51804999924207,
+            89.61604499972964,
+            89.56699999998818,
+            89.53965000046082,
+            89.53444499866237,
+            89.61109500205566,
+            89.57114999930127,
+            89.56469500162711,
+            89.54609500051447,
+            89.60049500046807,
+            89.56009500025175,
+            89.54534499935107
+          ],
+          "kernel_us": 89.40637499999994,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "layernorm_vec_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "layernorm_vec_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void (anonymous namespace)::layernorm_vec_kernel<float, float, false>(float const*, float*, float const*, float const*, long, float, bool)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 87.75856018066406,
+          "graph_us_min": 87.71519660949707,
+          "graph_us_max": 87.83184051513672,
+          "graph_error": null,
+          "bandwidth_gb_s": 1125.9760839201908,
+          "utilization_pct": 72.41003755113768
+        }
+      }
+    },
+    {
+      "M": 4096,
+      "N": 12288,
+      "dtype": "float32",
+      "bytes_moved": 402751488,
+      "correctness": {
+        "passed": true,
+        "detail": "max_abs_diff=1.431e-06 (atol=1e-05, rtol=0.0001)"
+      },
+      "candidates": {
+        "nn.LayerNorm (module)": {
+          "error": null,
+          "eager_us": 457.5123824997718,
+          "eager_us_min": 457.2252549996847,
+          "eager_us_max": 457.72590500064325,
+          "eager_us_reps": [
+            457.34779999975217,
+            457.5246599983984,
+            457.48070499939786,
+            457.56165500051793,
+            457.72590500064325,
+            457.63755499820036,
+            457.2716000006949,
+            457.36100499880195,
+            457.5839549988814,
+            457.23874500026795,
+            457.50010500114513,
+            457.2252549996847,
+            457.6482549987304,
+            457.4995100006163,
+            457.65165499915383,
+            457.63155500026187,
+            457.6966100012214,
+            457.47825000034936,
+            457.27715000111857,
+            457.57885500052
+          ],
+          "kernel_us": 456.19513500000016,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 455.726318359375,
+          "graph_us_min": 455.43567657470703,
+          "graph_us_max": 456.0433578491211,
+          "graph_error": null,
+          "bandwidth_gb_s": 882.8491518218402,
+          "utilization_pct": 56.774865068928634
+        },
+        "F.layer_norm": {
+          "error": null,
+          "eager_us": 457.33885000004193,
+          "eager_us_min": 457.113145000676,
+          "eager_us_max": 457.6702150006895,
+          "eager_us_reps": [
+            457.6702150006895,
+            457.63775500063275,
+            457.43175000097835,
+            457.4062500000764,
+            457.3393999999098,
+            457.2369500010609,
+            457.2678500016991,
+            457.113145000676,
+            457.31570000043575,
+            457.3852049998095,
+            457.33830000017406,
+            457.24479999989853,
+            457.3217500001192,
+            457.643959998677,
+            457.1794999992562,
+            457.5310099994567,
+            457.6127649988848,
+            457.5049000004583,
+            457.24964500095666,
+            457.1979449997343
+          ],
+          "kernel_us": 456.241495,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "vectorized_layer_norm_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "vectorized_layer_norm_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float, false>(int, float, float const*, float const*, float const*, float*, float*, float*)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 455.4789733886719,
+          "graph_us_min": 455.28480529785156,
+          "graph_us_max": 455.7718276977539,
+          "graph_error": null,
+          "bandwidth_gb_s": 882.7594430006856,
+          "utilization_pct": 56.76909601290583
+        },
+        "fused_layernorm_cuda.layernorm": {
+          "error": null,
+          "eager_us": 447.0810700001948,
+          "eager_us_min": 446.836460000668,
+          "eager_us_max": 447.3681200011015,
+          "eager_us_reps": [
+            447.2148200011361,
+            447.0840750013849,
+            447.1261199978471,
+            447.3681200011015,
+            447.17831500065586,
+            446.9818649999979,
+            446.836460000668,
+            446.95201999957135,
+            446.9565599993075,
+            447.0780649990047,
+            446.84436500119773,
+            447.2116699980688,
+            447.140420001233,
+            447.09291999879497,
+            446.9137099999898,
+            447.1082650002245,
+            447.1910699999171,
+            446.9334600003094,
+            446.9374649988822,
+            446.8773100006729
+          ],
+          "kernel_us": 446.14885000000027,
+          "kernel_launches_per_call": 1.0,
+          "kernel_names": {
+            "layernorm_vec_kernel": 200
+          },
+          "kernel_names_per_call": {
+            "layernorm_vec_kernel": 1.0
+          },
+          "kernel_names_full": {
+            "void (anonymous namespace)::layernorm_vec_kernel<float, float, false>(float const*, float*, float const*, float const*, long, float, bool)": 200
+          },
+          "non_kernel_device_events": 0,
+          "graph_us": 445.7045555114746,
+          "graph_us_min": 445.40897369384766,
+          "graph_us_max": 445.7825469970703,
+          "graph_error": null,
+          "bandwidth_gb_s": 902.7289614217314,
+          "utilization_pct": 58.05330941618851
+        }
+      }
+    }
+  ]
+}
