@@ -12,7 +12,7 @@ PyTorch as a C++ extension, together with an honest account of what has and has 
 > corrected claims is in [`CHANGELOG.md`](CHANGELOG.md).
 >
 > **Update 2026-08-20 (v0.3.0).** The rewritten code has now been built and measured on an
-> A100-SXM4-40GB: the full test suite (102 tests) passes, `bench_layernorm.py` has real profiler
+> A100-SXM4-40GB: the full test suite (104 tests) passes, `bench_layernorm.py` has real profiler
 > data ([`benchmarks/results/2026-08-20_a100-40gb_kernel_time/`](benchmarks/results/2026-08-20_a100-40gb_kernel_time/)),
 > and a vectorised single-pass (Welford) kernel variant was added so the comparison with PyTorch's
 > kernel is one of equals. See "What has been measured".
@@ -60,7 +60,7 @@ python -m pytest tests -q   # GPU tests run only when a GPU and the extension ar
 ```
 
 Built and tested with PyTorch 2.13.0+cu129 / CUDA toolkit 12.9 on an NVIDIA A100‑SXM4‑40GB
-(all 102 tests pass); their predecessor (commit `12dee09`) was built with PyTorch 2.7.1+cu128 /
+(all 104 tests pass); their predecessor (commit `12dee09`) was built with PyTorch 2.7.1+cu128 /
 CUDA 12.8 on an A100‑SXM4‑80GB in August 2025. Other GPUs/toolkits should build but are unmeasured.
 
 ## Usage
@@ -113,23 +113,25 @@ LayerNorm inside such a layer is bypassed unless you disable that path
 ### 2026‑08‑20, A100‑SXM4‑40GB: GPU kernel time for the code in this tree
 
 [`benchmarks/results/2026-08-20_a100-40gb_kernel_time/`](benchmarks/results/2026-08-20_a100-40gb_kernel_time/)
-(PyTorch 2.13.0+cu129, CUDA 12.9, produced by `benchmarks/bench_layernorm.py`; fp32 and fp16 files).
-`kernel_us` is device‑side kernel time from `torch.profiler` over 200 calls — the only number here
-that says anything about the kernel itself. fp32:
+(PyTorch 2.13.0+cu129, CUDA 12.9, produced by `benchmarks/bench_layernorm.py` from a clean clone of
+the benchmarked commit — each JSON records `git_commit`, `git_dirty = false`, driver and build
+flags; fp32, fp16, and a scalar‑baseline file). `kernel_us` is device‑side kernel time from
+`torch.profiler` over 200 calls — the only number here that says anything about the kernel itself.
+fp32:
 
 | rows × N | `F.layer_norm` kernel_us | ours kernel_us | kernel ratio | eager: `nn.LayerNorm` → ours |
 |---|---:|---:|---:|---|
-| 32 × 768 | 6.00 | 4.53 | **1.32×** | 14.4 → 6.4 µs |
-| 32 × 1024 | 5.16 | 3.99 | **1.29×** | 19.5 → 8.8 µs |
-| 32 × 4096 | 8.81 | 5.79 | **1.52×** | 19.8 → 8.9 µs |
-| 17 × 1023 | 7.20 | 3.66 | **1.97×** | 23.4 → 9.0 µs |
-| 128 × 4096 | 10.50 | 7.51 | **1.40×** | 19.8 → 8.8 µs |
-| 512 × 1024 | 6.86 | 7.80 | 0.88× | 19.9 → 8.7 µs |
-| 2048 × 4096 | 67.81 | 62.71 | **1.08×** | 68.8 → 63.6 µs |
-| 4096 × 4096 | 140.09 | 119.75 | **1.17×** | 141.4 → 123.2 µs |
-| 8192 × 1024 | 57.65 | 59.04 | 0.98× | 58.5 → 59.9 µs |
-| 16384 × 768 | 87.86 | 89.41 | 0.98× | 87.9 → 89.5 µs |
-| 4096 × 12288 | 456.24 | 446.15 | **1.02×** | 457.5 → 447.1 µs |
+| 32 × 768 | 6.17 | 4.66 | **1.32×** | 13.8 → 6.3 µs |
+| 32 × 1024 | 4.95 | 3.82 | **1.30×** | 19.0 → 8.7 µs |
+| 32 × 4096 | 8.82 | 5.79 | **1.52×** | 19.5 → 8.9 µs |
+| 17 × 1023 | 7.20 | 3.66 | **1.97×** | 23.1 → 8.9 µs |
+| 128 × 4096 | 10.50 | 7.50 | **1.40×** | 19.4 → 8.7 µs |
+| 512 × 1024 | 6.85 | 7.35 | 0.93× | 19.4 → 8.7 µs |
+| 2048 × 4096 | 67.80 | 60.69 | **1.12×** | 68.8 → 61.6 µs |
+| 4096 × 4096 | 140.09 | 117.86 | **1.19×** | 141.3 → 121.9 µs |
+| 8192 × 1024 | 57.59 | 57.88 | 1.00× | 58.4 → 58.6 µs |
+| 16384 × 768 | 87.85 | 86.93 | **1.01×** | 87.9 → 87.4 µs |
+| 4096 × 12288 | 456.31 | 445.53 | **1.02×** | 457.5 → 446.3 µs |
 
 How to read it:
 
@@ -138,21 +140,22 @@ How to read it:
   and allocation overhead — `nn.LayerNorm` also allocates `mean`/`rstd` — which is the effect the
   2025 numbers below measured without knowing it). The 17 × 1023 row is where PyTorch falls back to
   its two‑kernel path (odd N); this kernel handles odd N in one launch.
-* **Large memory‑bound shapes: mostly at or ahead of parity** (1.02–1.17× at N = 4096/12288;
-  effective bandwidth 1 071 vs 990 GB/s at 2048 × 4096, 1 121 vs 958 at 4096 × 4096, 903 vs 883 at
-  4096 × 12288 — 58–72 % of the 1 555 GB/s datasheet peak for this kernel),
-  **slightly behind on narrow rows with many of them** (0.88–0.98× at N = 768/1024).
-  The remaining loss cases are block‑scheduling, not algorithmic: both sides run the same
-  single‑pass Welford + 16‑byte‑load algorithm there.
-* fp16 (same directory): faster or at parity everywhere except 512 × 1024 (0.69×), 2048 × 4096
-  (0.89×) and 4096 × 4096 (0.97×); at 4096 × 12288 it is 1.10× ahead.
-* CUDA‑graph capture works (`graph_us` in the JSON tracks `kernel_us` closely for every shape),
-  which also retires the old "cannot be captured" caveat.
+* **Large memory‑bound shapes: at or ahead of parity everywhere except one** (1.02–1.19× at
+  N = 4096/12288; effective bandwidth 1 106 vs 990 GB/s at 2048 × 4096, 1 139 vs 958 at
+  4096 × 4096, 904 vs 883 at 4096 × 12288 — 58–73 % of the 1 555 GB/s datasheet peak for this
+  kernel; 1.00–1.01× at 8192 × 1024 and 16384 × 768). The one loss is **512 × 1024 at 0.93×** —
+  mid row‑count, narrow rows — a block‑scheduling case, not an algorithmic one: both sides run
+  the same single‑pass Welford + 16‑byte‑load algorithm there.
+* fp16 (same directory): faster everywhere (1.02–1.98×) except the same 512 × 1024 shape (0.74×).
+* CUDA‑graph capture works (`graph_us` stays within 13 % of `kernel_us` on every shape, usually
+  below it), which also retires the old "cannot be captured" caveat.
 * The August‑2025 claim this repository once made — "1.86–2.66× faster" — was an eager‑latency
   ratio. On this GPU the measured eager ratio against `nn.LayerNorm` is 2.2–2.6× below ~2 MiB, so
   the *number* was reproducible; what was wrong was calling it kernel speed. The kernel‑time
   ratios above are the defensible version of the claim, and they required adding the vectorised
-  kernel: the two‑pass scalar kernel alone measured 0.42–0.98× at the large shapes.
+  kernel: forcing the two‑pass scalar kernel on the same shapes (the committed
+  `FUSED_LAYERNORM_FORCE_KERNEL=scalar` baseline file) measures 0.42–0.98× at every M ≥ 512
+  shape — while still winning 1.29–1.97× at M ≤ 128, which is why the launcher keeps it there.
 
 ### 2025‑08‑17, A100‑SXM4‑80GB: eager latency only (historical, predecessor kernel)
 
@@ -194,8 +197,9 @@ gives 26.3–29.7 µs vs 10.6–10.8 µs pipelined for five of these shapes.
   ≈1.8× single‑call in this file) is a difference in per‑call *overhead* — a raw `pybind11` call that
   allocates one output vs. the full `nn.LayerNorm` path that also allocates `mean`/`rstd` (and builds
   an autograd node when grad is enabled) — and **not evidence about kernel speed**. The 2026
-  profiler data above confirms the reading: at these sizes the kernels themselves take 4–9 µs, so
-  the flat ≈10 µs / ≈21 µs pipelined numbers were indeed dominated by per‑call overhead.
+  profiler data above confirms the reading: at these sizes the kernels themselves take
+  3.7–10.5 µs, so the flat ≈10 µs / ≈21 µs pipelined numbers were indeed dominated by per‑call
+  overhead.
 * Within this 2025 data, kernel execution time was **not** isolated by any measurement (no
   profiler, `nsys`, `ncu`, or CUDA‑graph run exists for the predecessor kernel); only the 2026
   section above supports statements about kernel speed.
@@ -206,9 +210,9 @@ gives 26.3–29.7 µs vs 10.6–10.8 µs pipelined for five of these shapes.
   kernel.
 * At production shapes (thousands of rows per call) LayerNorm is memory‑bound. The expectation
   recorded here in the 0.2.0 rewrite — that a two‑pass kernel with scalar loads would not beat
-  PyTorch in that regime — was **confirmed** by the first hardware run (0.42–0.98× at the large
-  shapes), and is why 0.3.0 added the vectorised single‑pass kernel, which is the one measured in
-  the 2026 section above.
+  PyTorch in that regime — was **confirmed** on hardware (0.42–0.98× at every M ≥ 512 shape; the
+  committed scalar‑baseline file in the 2026 results directory), and is why 0.3.0 added the
+  vectorised single‑pass kernel, which is the one the launcher selects there.
 * Numerical agreement with PyTorch: max |ours − `nn.LayerNorm`| = 4.77 × 10⁻⁷ at 32 × 4096 fp32
   (`accuracy` block). This is a discrepancy versus PyTorch, not "better accuracy"; it was measured with
   the default `weight = 1, bias = 0`. The rewritten test suite uses random affine parameters.
@@ -230,9 +234,9 @@ else.
 * Any GPU other than one A100‑SXM4‑40GB (2026 data) and one A100‑SXM4‑80GB (2025 eager data);
   any PyTorch/CUDA other than 2.13.0 / 12.9 (2026) and 2.7.1 / 12.8 (2025). The block‑size and
   kernel‑selection heuristics in the launcher are tuned on the A100 measurements only.
-* On the measured GPU the kernel is *slower* than PyTorch's at some many‑narrow‑row shapes
-  (fp32: 0.88× at 512 × 1024, 0.98× at 8192 × 1024 and 16384 × 768; fp16 additionally 0.89× at
-  2048 × 4096). Faster‑everywhere is not claimed.
+* On the measured GPU the kernel is *slower* than PyTorch's at 512 × 1024 (0.93× in fp32, 0.74×
+  in fp16 — the worst committed result) and only at parity (1.00×) at 8192 × 1024 in fp32.
+  Faster‑everywhere is not claimed.
 * No backward pass; the package falls back to PyTorch when gradients are required.
 * GELU epilogue: numerics are tested against `F.gelu` on hardware (both forms), but its *speed*
   has not been benchmarked. Note the previous version used the tanh approximation while calling it
@@ -260,7 +264,7 @@ dtypes fp32/fp64/fp16/bf16 (fp64 includes an ill‑conditioned‑row case), weig
 rank‑1/3/4 inputs, non‑contiguous inputs, error cases, both GELU forms, execution on a side stream,
 determinism, forward‑only semantics, and empty batches. GPU tests are skipped automatically when the
 extension or a GPU is missing; the CPU‑only tests (fallback path, `replace_layernorm`) always run.
-All 102 tests pass on an A100‑SXM4‑40GB with PyTorch 2.13.0+cu129 (2026‑08‑20; both kernel paths
+All 104 tests pass on an A100‑SXM4‑40GB with PyTorch 2.13.0+cu129 (2026‑08‑20; both kernel paths
 are exercised — the vectorised kernel needs ≥ 256 rows and the suite includes 2048 × 4096).
 
 ## Project layout
