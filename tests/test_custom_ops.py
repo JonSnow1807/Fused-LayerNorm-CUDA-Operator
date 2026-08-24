@@ -24,9 +24,11 @@ EXPECTED_SCHEMAS = {
         "Tensor? bias=None, float eps=1.0000000000000001e-05) -> Tensor"
     ),
     "layer_norm_gelu": (
+        # approximate is Optional[str]=None (not str="none") because torch
+        # 2.4's schema inference rejects string default values.
         "fused_layernorm::layer_norm_gelu(Tensor input, Tensor? weight=None, "
         "Tensor? bias=None, float eps=1.0000000000000001e-05, "
-        'str approximate="none") -> Tensor'
+        "str? approximate=None) -> Tensor"
     ),
 }
 

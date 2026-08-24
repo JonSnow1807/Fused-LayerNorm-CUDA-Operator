@@ -581,11 +581,16 @@ def layer_norm_gelu(
     weight: Optional[Tensor] = None,
     bias: Optional[Tensor] = None,
     eps: float = 1e-5,
-    approximate: str = "none",
+    # Optional[str]=None instead of str="none": torch 2.4's schema inference
+    # rejects string DEFAULT VALUES (2.13 accepts them); None maps to the
+    # erf form in the body. The wrapper always passes the string explicitly.
+    approximate: Optional[str] = None,
 ) -> Tensor:
-    return _require_ext().layernorm_gelu(input, weight, bias, eps, approximate)
+    return _require_ext().layernorm_gelu(
+        input, weight, bias, eps, approximate if approximate is not None else "none"
+    )
 
 
 @layer_norm_gelu.register_fake
-def _(input, weight=None, bias=None, eps=1e-5, approximate="none"):
+def _(input, weight=None, bias=None, eps=1e-5, approximate=None):
     return input.new_empty(input.shape)
