@@ -74,6 +74,9 @@ def fused_add_layer_norm(
     if inplace:
         _check_inplace_grad(input, residual, weight, bias)
         if _eligible(input, shape, residual, weight, bias, ext_available=_ext is not None):
+            if not torch.compiler.is_compiling():
+                out, _ = _ext.fused_add_layernorm(input, residual, weight, bias, eps, True)
+                return out, residual
             out = torch.ops.fused_layernorm.fused_add_layer_norm_(
                 input, residual, weight, bias, eps
             )
@@ -87,6 +90,8 @@ def fused_add_layer_norm(
                 input, residual, weight, bias, eps
             )
             return y, z
+        if not torch.compiler.is_compiling():
+            return _ext.fused_add_layernorm(input, residual, weight, bias, eps, False)
         return torch.ops.fused_layernorm.fused_add_layer_norm(
             input, residual, weight, bias, eps
         )
@@ -112,9 +117,11 @@ def fused_add_rms_norm(
     if inplace:
         _check_inplace_grad(input, residual, weight)
         if _eligible(input, shape, residual, weight, ext_available=_ext is not None):
-            out = torch.ops.fused_layernorm.fused_add_rms_norm_(
-                input, residual, weight, _resolve_rms_eps(input.dtype, eps)
-            )
+            eps_c = _resolve_rms_eps(input.dtype, eps)
+            if not torch.compiler.is_compiling():
+                out, _ = _ext.fused_add_rmsnorm(input, residual, weight, eps_c, True)
+                return out, residual
+            out = torch.ops.fused_layernorm.fused_add_rms_norm_(input, residual, weight, eps_c)
             return out, residual
         residual = residual.add_(input)
         return F.rms_norm(residual, shape, weight, eps), residual
@@ -126,6 +133,8 @@ def fused_add_rms_norm(
                 input, residual, weight, eps_c
             )
             return y, z
+        if not torch.compiler.is_compiling():
+            return _ext.fused_add_rmsnorm(input, residual, weight, eps_c, False)
         return torch.ops.fused_layernorm.fused_add_rms_norm(input, residual, weight, eps_c)
     z = input + residual
     return F.rms_norm(z, shape, weight, eps), z

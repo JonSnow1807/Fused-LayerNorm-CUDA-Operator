@@ -50,6 +50,8 @@ def rms_norm(
         if _needs_grad(input, weight):
             y, _ = torch.ops.fused_layernorm.rms_norm_fwd_train(input, weight, eps_c)
             return y
+        if not torch.compiler.is_compiling():
+            return _ext.rmsnorm(input, weight, eps_c)  # eager fast path (see layer_norm)
         return torch.ops.fused_layernorm.rms_norm(input, weight, eps_c)
     return F.rms_norm(input, shape, weight, eps)
 

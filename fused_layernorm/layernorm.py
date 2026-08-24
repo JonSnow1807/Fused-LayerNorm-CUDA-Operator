@@ -135,6 +135,11 @@ def layer_norm(
         if _needs_grad(input, weight, bias):
             y, _, _ = torch.ops.fused_layernorm.layer_norm_fwd_train(input, weight, bias, eps)
             return y
+        if not torch.compiler.is_compiling():
+            # Eager fast path: the custom-op dispatcher costs tens of
+            # microseconds per call; the raw pybind call is the same kernel.
+            # Under tracing the custom op is required (pybind graph-breaks).
+            return _ext.layernorm(input, weight, bias, eps)
         return torch.ops.fused_layernorm.layer_norm(input, weight, bias, eps)
     return F.layer_norm(input, shape, weight, bias, eps)
 
@@ -156,6 +161,8 @@ def layer_norm_gelu(
     """
     shape = _as_shape(normalized_shape)
     if _use_fused(input, shape, weight, bias):
+        if not torch.compiler.is_compiling():
+            return _ext.layernorm_gelu(input, weight, bias, eps, approximate)
         return torch.ops.fused_layernorm.layer_norm_gelu(input, weight, bias, eps, approximate)
     return F.gelu(F.layer_norm(input, shape, weight, bias, eps), approximate=approximate)
 

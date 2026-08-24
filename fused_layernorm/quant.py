@@ -75,6 +75,11 @@ def rms_norm_fp8(
     _check_quant_call(input, weight, scale=scale, scale_ub=scale_ub)
     eps_c = _resolve_rms_eps(input.dtype, eps)
     if _eligible(input, shape, weight, ext_available=_ext is not None):
+        if not torch.compiler.is_compiling():  # eager fast path (see layer_norm)
+            if scale is not None:
+                out, _ = _ext.rmsnorm_fp8_static(input, scale, weight, eps_c)
+                return out, scale
+            return _ext.rmsnorm_fp8_dynamic(input, weight, eps_c, scale_ub)
         if scale is not None:
             out = torch.ops.fused_layernorm.rms_norm_fp8_static(input, scale, weight, eps_c)
             return out, scale
@@ -107,6 +112,20 @@ def fused_add_rms_norm_fp8(
     _check_quant_call(input, residual, weight, scale=scale, scale_ub=scale_ub)
     eps_c = _resolve_rms_eps(input.dtype, eps)
     if _eligible(input, shape, residual, weight, ext_available=_ext is not None):
+        if not torch.compiler.is_compiling():
+            if inplace:
+                if scale is not None:
+                    out, z, _ = _ext.fused_add_rmsnorm_fp8_static(
+                        input, residual, scale, weight, eps_c, True)
+                    return out, residual, scale
+                return _ext.fused_add_rmsnorm_fp8_dynamic(
+                    input, residual, weight, eps_c, scale_ub, True)
+            if scale is not None:
+                out, z, _ = _ext.fused_add_rmsnorm_fp8_static(
+                    input, residual, scale, weight, eps_c, False)
+                return out, z, scale
+            return _ext.fused_add_rmsnorm_fp8_dynamic(
+                input, residual, weight, eps_c, scale_ub, False)
         ops = torch.ops.fused_layernorm
         if inplace:
             if scale is not None:
