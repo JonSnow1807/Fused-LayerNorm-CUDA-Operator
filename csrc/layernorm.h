@@ -17,7 +17,16 @@ enum class NormEpilogue : int {
   kNone = 0,
   kGeluErf = 1,
   kGeluTanh = 2,
-  // kFp8Static / kFp8Dynamic are introduced with the quant kernels.
+  kFp8Static = 3,   // out dtype float8_e4m3fn, per-tensor scale read on device
+  kFp8Dynamic = 4,  // out dtype float8_e4m3fn, per-row scale written by the kernel
+};
+
+// Runtime state for the quantising epilogues. Only the fields of the selected
+// epilogue are read.
+struct EpilogueParams {
+  at::Tensor scale_in;   // kFp8Static: [1] fp32 CUDA tensor (dequant scale)
+  at::Tensor scale_out;  // kFp8Dynamic: [M] fp32, written per row
+  double scale_ub = 0.0;  // kFp8Dynamic: clamp for the row amax; <= 0 => unused
 };
 
 }  // namespace fused_norm
@@ -55,6 +64,9 @@ void layernorm_cuda_launch(const at::Tensor& input2d,
 //     per-row rsqrt(mean(z^2) + eps) - what autograd saves.
 //   * eps must already be resolved (the F.rms_norm eps=None convention is a
 //     Python-side concern).
+// epi: kNone, or kFp8Static/kFp8Dynamic (then output2d has dtype
+// float8_e4m3fn, scalar dtype comes from input2d, and epi_params carries the
+// scale tensor(s); fp64 inputs are rejected for the fp8 epilogues).
 void rmsnorm_fwd_cuda_launch(const at::Tensor& input2d,
                              const at::Tensor& residual_in2d_or_undef,
                              const at::Tensor& weight_or_undef,
@@ -62,7 +74,8 @@ void rmsnorm_fwd_cuda_launch(const at::Tensor& input2d,
                              at::Tensor& residual_out2d_or_undef,
                              at::Tensor& rstd_or_undef,
                              double eps,
-                             fused_norm::NormEpilogue epi);
+                             fused_norm::NormEpilogue epi,
+                             const fused_norm::EpilogueParams& epi_params = {});
 
 // Launches the fused residual-add + LayerNorm forward (norm_fwd_ln.cu):
 //   residual_out = round(input + residual_in); output = layer_norm(residual_out).

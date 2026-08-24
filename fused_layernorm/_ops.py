@@ -429,6 +429,147 @@ def _(input, residual, weight=None, eps=1e-6):
     return input.new_empty(input.shape)
 
 
+# --------------------------------------------------------------------------- #
+# fp8-E4M3 quantised-output RMSNorm ops (inference-only; the wrappers reject
+# grad mode before reaching these). Contract: the fp8 bytes equal quantising
+# the None-epilogue output with q = round_e4m3(clamp(y * (1/scale), +-448)) -
+# note the RECIPROCAL MULTIPLY, not a division (byte-level contract, tested).
+# Dynamic scale = clamp(row_amax(|y|), <= scale_ub)/448 with an all-zero-row
+# guard, returned with a trailing broadcast dim so out.float() * scale
+# dequantises directly.
+# --------------------------------------------------------------------------- #
+
+
+def _fp8_out(input: Tensor) -> Tensor:
+    return input.new_empty(input.shape, dtype=torch.float8_e4m3fn)
+
+
+def _fp8_scale(input: Tensor) -> Tensor:
+    return input.new_empty(input.shape[:-1] + (1,), dtype=torch.float32)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::rms_norm_fp8_static", mutates_args=(), device_types="cuda"
+)
+def rms_norm_fp8_static(
+    input: Tensor,
+    scale: Tensor,
+    weight: Optional[Tensor] = None,
+    eps: float = 1e-6,
+) -> Tensor:
+    out, _ = _require_ext().rmsnorm_fp8_static(input, scale, weight, eps)
+    return out
+
+
+@rms_norm_fp8_static.register_fake
+def _(input, scale, weight=None, eps=1e-6):
+    return _fp8_out(input)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::rms_norm_fp8_dynamic", mutates_args=(), device_types="cuda"
+)
+def rms_norm_fp8_dynamic(
+    input: Tensor,
+    weight: Optional[Tensor] = None,
+    eps: float = 1e-6,
+    scale_ub: Optional[float] = None,
+) -> tuple[Tensor, Tensor]:
+    return _require_ext().rmsnorm_fp8_dynamic(input, weight, eps, scale_ub)
+
+
+@rms_norm_fp8_dynamic.register_fake
+def _(input, weight=None, eps=1e-6, scale_ub=None):
+    return _fp8_out(input), _fp8_scale(input)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::fused_add_rms_norm_fp8_static", mutates_args=(), device_types="cuda"
+)
+def fused_add_rms_norm_fp8_static(
+    input: Tensor,
+    residual: Tensor,
+    scale: Tensor,
+    weight: Optional[Tensor] = None,
+    eps: float = 1e-6,
+) -> tuple[Tensor, Tensor]:
+    out, z, _ = _require_ext().fused_add_rmsnorm_fp8_static(
+        input, residual, scale, weight, eps, False
+    )
+    return out, z
+
+
+@fused_add_rms_norm_fp8_static.register_fake
+def _(input, residual, scale, weight=None, eps=1e-6):
+    return _fp8_out(input), input.new_empty(input.shape)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::fused_add_rms_norm_fp8_static_",
+    mutates_args={"residual"},
+    device_types="cuda",
+)
+def fused_add_rms_norm_fp8_static_(
+    input: Tensor,
+    residual: Tensor,
+    scale: Tensor,
+    weight: Optional[Tensor] = None,
+    eps: float = 1e-6,
+) -> Tensor:
+    out, _, _ = _require_ext().fused_add_rmsnorm_fp8_static(
+        input, residual, scale, weight, eps, True
+    )
+    return out
+
+
+@fused_add_rms_norm_fp8_static_.register_fake
+def _(input, residual, scale, weight=None, eps=1e-6):
+    return _fp8_out(input)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::fused_add_rms_norm_fp8_dynamic", mutates_args=(), device_types="cuda"
+)
+def fused_add_rms_norm_fp8_dynamic(
+    input: Tensor,
+    residual: Tensor,
+    weight: Optional[Tensor] = None,
+    eps: float = 1e-6,
+    scale_ub: Optional[float] = None,
+) -> tuple[Tensor, Tensor, Tensor]:
+    return _require_ext().fused_add_rmsnorm_fp8_dynamic(
+        input, residual, weight, eps, scale_ub, False
+    )
+
+
+@fused_add_rms_norm_fp8_dynamic.register_fake
+def _(input, residual, weight=None, eps=1e-6, scale_ub=None):
+    return _fp8_out(input), input.new_empty(input.shape), _fp8_scale(input)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::fused_add_rms_norm_fp8_dynamic_",
+    mutates_args={"residual"},
+    device_types="cuda",
+)
+def fused_add_rms_norm_fp8_dynamic_(
+    input: Tensor,
+    residual: Tensor,
+    weight: Optional[Tensor] = None,
+    eps: float = 1e-6,
+    scale_ub: Optional[float] = None,
+) -> tuple[Tensor, Tensor]:
+    out, _, s = _require_ext().fused_add_rmsnorm_fp8_dynamic(
+        input, residual, weight, eps, scale_ub, True
+    )
+    return out, s
+
+
+@fused_add_rms_norm_fp8_dynamic_.register_fake
+def _(input, residual, weight=None, eps=1e-6, scale_ub=None):
+    return _fp8_out(input), _fp8_scale(input)
+
+
 @torch.library.custom_op(
     "fused_layernorm::layer_norm_gelu", mutates_args=(), device_types="cuda"
 )

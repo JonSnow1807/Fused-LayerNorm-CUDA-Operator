@@ -6,18 +6,91 @@
 
 #include <cuda_runtime.h>
 
+#if defined(CUDART_VERSION) && CUDART_VERSION >= 11080
+#include <cuda_fp8.h>
+#define FUSED_NORM_HAS_FP8 1
+#else
+#define FUSED_NORM_HAS_FP8 0
+#endif
+
 namespace fused_norm {
 
 // Epilogue functors for the generic forward kernels (norm_fwd_kernels.cuh).
 // Each functor defines the element type it stores (out_t) and converts the
-// fp32/fp64 normalised value on the way out. The fp8 functors (which also set
-// kNeedsRowMax and quantise) are added with the quant kernels.
+// fp32/fp64 normalised value on the way out via store(v, inv_scale)
+// (inv_scale is meaningful only for the quantising epilogues; others get
+// 1.0f). kNeedsRowMax=true adds a per-row amax pass in the kernel, after
+// which finalize_scale() maps the row amax to the stored scale and the
+// inv_scale handed to store().
 template <typename scalar_t, typename acc_t>
 struct EpiNone {
   using out_t = scalar_t;
   static constexpr bool kNeedsRowMax = false;
-  __device__ __forceinline__ out_t store(acc_t v) const { return static_cast<out_t>(v); }
+  __device__ __forceinline__ float load_inv_scale() const { return 1.f; }
+  __device__ __forceinline__ out_t store(acc_t v, float /*inv_scale*/) const {
+    return static_cast<out_t>(v);
+  }
 };
+
+#if FUSED_NORM_HAS_FP8
+
+// fp8 E4M3 epilogues (inference-only; fp16/bf16/fp32 inputs). Both round the
+// normalised value through scalar_t FIRST and quantise that: the fp8 output
+// is then byte-identical to quantising the None-epilogue output (composite
+// equivalence - vLLM's fp8 epilogue makes the same deliberate choice), which
+// the tests assert. scale is the DEQUANT scale (x ~ fp8.float() * scale).
+// E4M3-fn max finite = 448. On sm_80 the conversion intrinsic is emulated
+// (no hardware fp8 convert before sm_89) - fine for an epilogue; measured,
+// not assumed, in the benchmarks.
+
+__device__ __forceinline__ __nv_fp8_e4m3 to_fp8_e4m3(float v, float inv_scale) {
+  const float q = fminf(fmaxf(v * inv_scale, -448.f), 448.f);
+  // __nv_cvt_float_to_fp8 returns the raw STORAGE byte; assign it to __x
+  // directly. The __nv_fp8_e4m3(unsigned char) constructor would instead
+  // numerically convert the byte's value - a silent corruption caught by the
+  // byte-equality tests.
+  __nv_fp8_e4m3 out;
+  out.__x = __nv_cvt_float_to_fp8(q, __NV_SATFINITE, __NV_E4M3);
+  return out;
+}
+
+// Static per-tensor scale: a [1] fp32 CUDA tensor dereferenced ON DEVICE (no
+// .item(), no host sync - CUDA-graph capturable). Each thread inverts once.
+template <typename scalar_t, typename acc_t>
+struct EpiFp8Static {
+  const float* scale_ptr;  // [1]
+  using out_t = __nv_fp8_e4m3;
+  static constexpr bool kNeedsRowMax = false;
+  __device__ __forceinline__ float load_inv_scale() const { return 1.f / *scale_ptr; }
+  __device__ __forceinline__ out_t store(acc_t v, float inv_scale) const {
+    const scalar_t rounded = static_cast<scalar_t>(v);
+    return to_fp8_e4m3(static_cast<float>(rounded), inv_scale);
+  }
+};
+
+// Dynamic per-token scale: the kernel's row-max pass feeds the amax of the
+// scalar_t-rounded outputs to finalize_scale, which clamps to scale_ub (when
+// > 0), guards all-zero rows, stores scale_out[row] and returns 1/scale.
+template <typename scalar_t, typename acc_t>
+struct EpiFp8Dynamic {
+  float* scale_out;  // [M]
+  float scale_ub;    // <= 0 => unused
+  using out_t = __nv_fp8_e4m3;
+  static constexpr bool kNeedsRowMax = true;
+  __device__ __forceinline__ float load_inv_scale() const { return 1.f; }  // replaced per row
+  __device__ __forceinline__ float finalize_scale(float amax, int64_t row) const {
+    if (scale_ub > 0.f) amax = fminf(amax, scale_ub);
+    const float scale = fmaxf(amax, 1e-12f) / 448.f;
+    scale_out[row] = scale;
+    return 1.f / scale;
+  }
+  __device__ __forceinline__ out_t store(acc_t v, float inv_scale) const {
+    const scalar_t rounded = static_cast<scalar_t>(v);
+    return to_fp8_e4m3(static_cast<float>(rounded), inv_scale);
+  }
+};
+
+#endif  // FUSED_NORM_HAS_FP8
 
 // GELU, exact form:  0.5 * x * (1 + erf(x / sqrt(2))).
 // The literal is 1/sqrt(2). Called unqualified so the float / double overloads of erf resolve

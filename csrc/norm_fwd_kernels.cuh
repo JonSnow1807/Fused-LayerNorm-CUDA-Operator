@@ -112,6 +112,34 @@ __global__ void norm_fwd_kernel(const scalar_t* __restrict__ input,
   __syncthreads();
   const acc_t rstd = s_rstd;
 
+  // Quantising epilogues: inv_scale is per-thread (static scale) or comes
+  // from an extra per-row amax pass over the would-be scalar_t outputs
+  // (dynamic scale). The barrier above separates this block reduction from
+  // the stats one, as blockReduce's contract requires.
+  float inv_scale = epi.load_inv_scale();
+  if constexpr (Epi::kNeedsRowMax) {
+    __shared__ float s_inv_scale;
+    float amax = 0.f;
+    for (int64_t i = tid; i < N; i += stride) {
+      acc_t v = static_cast<acc_t>(SRC[i]);
+      if constexpr (kRMS) {
+        v *= rstd;
+      } else {
+        v = (v - mean) * rstd;
+      }
+      if (gamma) v *= static_cast<acc_t>(gamma[i]);
+      if constexpr (!kRMS) {
+        if (beta) v += static_cast<acc_t>(beta[i]);
+      }
+      const float y_s = static_cast<float>(static_cast<scalar_t>(v));
+      amax = fmaxf(amax, fabsf(y_s));
+    }
+    amax = blockReduceMax<float>(amax);
+    if (tid == 0) s_inv_scale = epi.finalize_scale(amax, row);
+    __syncthreads();
+    inv_scale = s_inv_scale;
+  }
+
   // Store pass: normalise, optional affine, epilogue.
   for (int64_t i = tid; i < N; i += stride) {
     acc_t v = static_cast<acc_t>(SRC[i]);
@@ -124,7 +152,7 @@ __global__ void norm_fwd_kernel(const scalar_t* __restrict__ input,
     if constexpr (!kRMS) {
       if (beta) v += static_cast<acc_t>(beta[i]);
     }
-    Y[i] = epi.store(v);
+    Y[i] = epi.store(v, inv_scale);
   }
 }
 
@@ -148,14 +176,10 @@ __global__ void norm_fwd_vec_kernel(const scalar_t* __restrict__ input,
                                     acc_t eps,
                                     Epi epi) {
   using V = Vec<scalar_t>;
-  // The output vector must pack the SAME element count as the input vector
-  // (the loop is indexed in input-vector units). Same-size out_t makes
-  // Vec<out_t> exactly that; a narrower out_t (fp8) needs its own store path
-  // - guarded here so the quant phase cannot silently mis-vectorise.
-  static_assert(sizeof(typename Epi::out_t) == sizeof(scalar_t),
-                "norm_fwd_vec_kernel assumes sizeof(out_t) == sizeof(scalar_t); "
-                "narrow epilogue outputs need a dedicated store path");
-  using OutV = Vec<typename Epi::out_t>;
+  // Same-size out_t (the None epilogue) stores whole output vectors; a
+  // narrower out_t (fp8) stores element-wise below - Vec<out_t> would pack
+  // the wrong element count for the input-vector-indexed loop.
+  constexpr bool kSameSizeOut = sizeof(typename Epi::out_t) == sizeof(scalar_t);
   constexpr int kW = kVecWidth<scalar_t>;
   const int64_t row = blockIdx.x;
   const int tid = threadIdx.x;
@@ -223,8 +247,41 @@ __global__ void norm_fwd_vec_kernel(const scalar_t* __restrict__ input,
   const acc_t mean = kRMS ? static_cast<acc_t>(0) : s_mean;
   const acc_t rstd = s_rstd;
 
+  // Quantising epilogues: see the scalar kernel; identical structure with
+  // vector loads.
+  float inv_scale = epi.load_inv_scale();
+  if constexpr (Epi::kNeedsRowMax) {
+    __shared__ float s_inv_scale;
+    float amax = 0.f;
+    for (int64_t i = tid; i < nvec; i += stride) {
+      const V z = SRC[i];
+      V gv, bv;
+      if (gamma) gv = G[i];
+      if constexpr (!kRMS) {
+        if (beta) bv = B[i];
+      }
+#pragma unroll
+      for (int k = 0; k < kW; ++k) {
+        acc_t v = static_cast<acc_t>(z.v[k]);
+        if constexpr (kRMS) {
+          v *= rstd;
+        } else {
+          v = (v - mean) * rstd;
+        }
+        if (gamma) v *= static_cast<acc_t>(gv.v[k]);
+        if constexpr (!kRMS) {
+          if (beta) v += static_cast<acc_t>(bv.v[k]);
+        }
+        amax = fmaxf(amax, fabsf(static_cast<float>(static_cast<scalar_t>(v))));
+      }
+    }
+    amax = blockReduceMax<float>(amax);
+    if (tid == 0) s_inv_scale = epi.finalize_scale(amax, row);
+    __syncthreads();
+    inv_scale = s_inv_scale;
+  }
+
   // Store pass.
-  OutV* Y = reinterpret_cast<OutV*>(output + row * N);
   for (int64_t i = tid; i < nvec; i += stride) {
     const V z = SRC[i];
     V gv, bv;
@@ -232,7 +289,8 @@ __global__ void norm_fwd_vec_kernel(const scalar_t* __restrict__ input,
     if constexpr (!kRMS) {
       if (beta) bv = B[i];
     }
-    OutV y;
+    typename Epi::out_t y_narrow[kW];
+    V y_wide;
 #pragma unroll
     for (int k = 0; k < kW; ++k) {
       acc_t v = static_cast<acc_t>(z.v[k]);
@@ -245,9 +303,21 @@ __global__ void norm_fwd_vec_kernel(const scalar_t* __restrict__ input,
       if constexpr (!kRMS) {
         if (beta) v += static_cast<acc_t>(bv.v[k]);
       }
-      y.v[k] = epi.store(v);
+      if constexpr (kSameSizeOut) {
+        // Same size implies same type in this library (EpiNone).
+        y_wide.v[k] = epi.store(v, inv_scale);
+      } else {
+        y_narrow[k] = epi.store(v, inv_scale);
+      }
     }
-    Y[i] = y;
+    if constexpr (kSameSizeOut) {
+      reinterpret_cast<V*>(output + row * N)[i] = y_wide;
+    } else {
+#pragma unroll
+      for (int k = 0; k < kW; ++k) {
+        output[row * N + i * kW + k] = y_narrow[k];
+      }
+    }
   }
 }
 
