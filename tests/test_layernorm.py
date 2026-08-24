@@ -595,6 +595,13 @@ def test_wrapper_dispatches_to_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
             calls.append("layernorm_gelu")
             return _ext.layernorm_gelu(*args, **kwargs)
 
+    # The fused path routes through torch.ops.fused_layernorm.* whose bodies
+    # read fused_layernorm._ops._ext, so that is the seam to spy on. The
+    # wrapper's own eligibility check reads layernorm._ext; patch both so an
+    # ineligible call cannot sneak through either.
+    import fused_layernorm._ops as _ops_mod
+
+    monkeypatch.setattr(_ops_mod, "_ext", _Spy())
     monkeypatch.setattr(fused_layernorm.layernorm, "_ext", _Spy())
     x = _randn((4, 5, 64), torch.float32)
     w, b = _affine(64, torch.float32)

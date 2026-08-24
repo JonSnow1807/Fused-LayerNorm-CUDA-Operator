@@ -12,6 +12,16 @@ from typing import Callable, Optional, Sequence, Type, Union
 import torch
 import torch.nn as nn
 
+# Lazy / optional import of the compiled extension. ``_ext`` stays ``None``
+# when the extension has not been built (or cannot be loaded); every public
+# function then uses its PyTorch fallback. Lives here (not in layernorm.py)
+# so both the op wrappers and the custom-op registrations in _ops.py can share
+# it without a circular import.
+try:  # pragma: no cover - exercised only when the extension is built
+    import fused_layernorm_cuda as _ext  # type: ignore[import-not-found]
+except ImportError:
+    _ext = None
+
 _Shape = Union[int, Sequence[int], torch.Size]
 
 

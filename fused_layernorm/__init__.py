@@ -24,6 +24,11 @@ from .layernorm import (
     replace_layernorm,
 )
 
+# Registers torch.ops.fused_layernorm.* (needed by the fused paths above and
+# by torch.compile tracing). Import order matters only in that this must run
+# before any fused-path call; package import guarantees it.
+from . import _ops  # noqa: E402,F401
+
 # Single source of truth for the version: setup.py regex-reads this line and
 # injects it into the extension as -DFUSED_LN_VERSION; pyproject.toml reads it
 # via [tool.setuptools.dynamic].

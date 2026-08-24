@@ -41,6 +41,7 @@ from ._common import (
     _as_shape,
     _autocast_active,
     _eligible,
+    _ext,
     _needs_grad,
     _replace_modules,
     _same_dtype_and_device,
@@ -55,13 +56,8 @@ __all__ = [
     "replace_layernorm",
 ]
 
-# Lazy / optional import of the compiled extension.  ``_ext`` stays ``None`` when
-# the extension has not been built (or cannot be loaded), and every public
-# function below then uses the PyTorch fallback.
-try:  # pragma: no cover - exercised only when the extension is built
-    import fused_layernorm_cuda as _ext  # type: ignore[import-not-found]
-except ImportError:
-    _ext = None
+# The compiled-extension handle (or None) is shared via _common; re-exported
+# here because tests and is_available() read ``fused_layernorm.layernorm._ext``.
 
 def is_available() -> bool:
     """Return ``True`` iff the compiled extension imported and CUDA is usable.
@@ -130,7 +126,9 @@ def layer_norm(
     """
     shape = _as_shape(normalized_shape)
     if _use_fused(input, shape, weight, bias):
-        return _ext.layernorm(input, weight, bias, eps)
+        # Through the dispatcher (not the raw pybind call) so the same path
+        # works under torch.compile without a graph break; see _ops.py.
+        return torch.ops.fused_layernorm.layer_norm(input, weight, bias, eps)
     return F.layer_norm(input, shape, weight, bias, eps)
 
 
@@ -151,7 +149,7 @@ def layer_norm_gelu(
     """
     shape = _as_shape(normalized_shape)
     if _use_fused(input, shape, weight, bias):
-        return _ext.layernorm_gelu(input, weight, bias, eps, approximate)
+        return torch.ops.fused_layernorm.layer_norm_gelu(input, weight, bias, eps, approximate)
     return F.gelu(F.layer_norm(input, shape, weight, bias, eps), approximate=approximate)
 
 
