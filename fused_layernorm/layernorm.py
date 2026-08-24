@@ -21,12 +21,14 @@ Design rules (see docstrings below for details):
 * Nothing in ``torch.nn`` is monkeypatched.  Use :func:`replace_layernorm` on a
   specific model instead.
 
-Limitations: no backward pass; the fused path never runs under autograd, under
-CUDA autocast, or with ``weight``/``bias`` whose dtype or device differs from
+Since v0.4.0 gradient-requiring calls run the fused kernels too (fwd-train
+variants with a registered CUDA backward); the remaining fallbacks are CUDA
+autocast regions and ``weight``/``bias`` whose dtype/device differs from
 ``input`` (those calls go to PyTorch, which then behaves exactly as
 ``nn.LayerNorm`` would -- including raising, since PyTorch's own CUDA LayerNorm
 rejects a weight/bias dtype different from the input outside autocast); the
-kernel is only used for CUDA tensors of dtype float32/float64/float16/bfloat16.
+kernels are used for CUDA tensors of dtype float32/float64/float16/bfloat16.
+``layer_norm_gelu`` remains forward-only (falls back under grad).
 """
 
 from __future__ import annotations
@@ -112,10 +114,9 @@ def layer_norm(
     none of ``input``/``weight``/``bias`` requires grad).  In every other case
     this is exactly ``torch.nn.functional.layer_norm``.
 
-    Rationale for the grad rule: the kernel is forward-only and returns a
-    tensor without ``grad_fn``.  Using it inside a training graph would
-    silently detach the output, which is a correctness bug; therefore any call
-    that autograd would record goes to PyTorch.
+    Since v0.4.0 calls that require gradients run the fused fwd-train kernel
+    (bitwise-identical output) with a registered CUDA backward, so training
+    uses the fused path too.
 
     Rationale for the dtype / autocast rule: under ``torch.autocast`` PyTorch
     runs ``layer_norm`` in fp32 and returns fp32 (the kernel would return

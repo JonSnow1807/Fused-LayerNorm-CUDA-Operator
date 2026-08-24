@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.4.0 — 2026‑08‑21 — from one kernel to a fused-normalisation library
+
+### Added
+
+* **RMSNorm**: `rms_norm()` (exact `F.rms_norm` drop-in, including the
+  `eps=None` = machine-epsilon-of-compute-dtype semantics), `RMSNorm`
+  (`nn.RMSNorm` subclass, `from_torch` parameter sharing), `replace_rmsnorm`.
+* **Fused residual-add + norm** — the op eager `aten` does not have:
+  `fused_add_layer_norm` / `fused_add_rms_norm` returning
+  `(out, new_residual)`, with the bitwise contract
+  `new_residual == round(x + residual)` (rounded exactly once) and
+  `out == plain_norm(new_residual)` (statistics over the rounded sum;
+  asserted with `torch.equal` across dtypes and kernel flavours).
+  `inplace=True` (inference-only, contiguous residual required, rejected
+  under grad) mutates the residual in place. `FusedAddLayerNorm` /
+  `FusedAddRMSNorm` modules return `(normed, new_residual)` and downgrade
+  inplace to out-of-place under grad mode.
+* **Real CUDA backward** for `layer_norm`, `rms_norm` and both fused-add ops:
+  dx via a paired two-sum row reduction; dgamma/dbeta via a deterministic
+  two-stage reduction (fixed-chunk fp32 partials + fixed-shape aten sum — no
+  atomics, bitwise run-to-run reproducible, tested). Fused-add backward
+  accepts cotangents for BOTH outputs (`dx = dresidual = norm_dx + dz`).
+  Verified with `torch.autograd.gradcheck` on CUDA fp64 (the reason fp64 is
+  supported on these paths), composite-grad comparisons for fp32/16/bf16, and
+  a different-cotangents both-outputs test.
+* **fp8-E4M3 quantised outputs** (inference-only, RMS family):
+  `rms_norm_fp8` / `fused_add_rms_norm_fp8` with static per-tensor scale
+  (a `[1]` fp32 CUDA tensor read on-device — no host sync, CUDA-graph
+  capturable) or dynamic per-token scales (in-kernel row amax, optional
+  `scale_ub`, all-zero-row guard, trailing broadcast dim). Byte-level
+  contract: output equals quantising the plain norm output with
+  `round_e4m3(clamp(y * (1/scale), ±448))` — reciprocal multiply, rounded
+  through the input dtype first (composite equivalence).
+* **`torch.compile` integration**: every public op is a
+  `torch.library.custom_op` (namespace `fused_layernorm::`) with fake impls
+  and, for the training forwards, `register_autograd` — the wrappers trace
+  `fullgraph=True` with zero graph breaks (pinned by tests via
+  `torch._dynamo.explain`), including compiled backward and functionalised
+  inplace ops. Eager no-grad calls take a raw-pybind fast path
+  (`torch.compiler.is_compiling()` split) because the custom-op dispatcher
+  measured ~40–50 µs per call.
+* **CI** (`.github/workflows/ci.yml`) — the job promised since 0.2.0: a CPU
+  test matrix (py3.10/torch 2.4, py3.12/torch 2.13) and a CUDA compile-only
+  job (sm80/sm90). CI has no GPU and says so; hardware truth stays with the
+  committed benchmark provenance files.
+* `benchmarks/bench_norms.py`: op-registry benchmark for the new op family on
+  the verified timing core, with `torch.compile`d composites as competitors
+  and per-op bytes-moved models recorded in the JSON.
+* csrc groundwork: shared device machinery extracted verbatim into
+  `norm_{reduce,vec,epilogue,dispatch}.cuh`; generic forward template
+  (`norm_fwd_kernels.cuh`) covering {LayerNorm, RMSNorm} × {plain, fused-add}
+  × epilogue functors in scalar and 16-byte-vectorised flavours; the two
+  verified v0.3.0 LayerNorm kernels are byte-identical and still serve plain
+  LayerNorm inference.
+
+### Changed
+
+* **Gradient-requiring calls now run the fused kernels** (fwd-train variants
+  whose outputs are bitwise identical to the inference path) instead of
+  falling back to PyTorch — the one intended behaviour change; the old
+  fallback tests were updated to pin the new routing.
+* torch floor 2.0 → 2.4 (`torch.library.custom_op`).
+* Version single-sourced from `fused_layernorm/__init__.py` (setup.py injects
+  it into the extension; pyproject reads it dynamically; tests assert
+  equality, not literals).
+* Test suite: 104 → 257 tests.
+
+### Found the hard way (documented in code)
+
+* `__nv_fp8_e4m3(unsigned char)` numerically converts the storage byte — the
+  raw byte must be assigned to `.__x` (caught by the byte-equality tests).
+* Reciprocal-multiply vs division round differently — the quantisation
+  contract names the multiply.
+* `ctx.needs_input_grad`'s length varies across custom-op variants (indexed
+  defensively) and custom-op outputs may not alias each other (distinct
+  empty tensors for unrequested grads).
+* Routing eager calls through the custom-op dispatcher costs ~40–50 µs per
+  call — measured by the benchmark this release adds, fixed with the
+  `is_compiling()` split.
+
+### Measured
+
+* _Completed in the release data commit (benchmarks run from a clean clone of
+  the release code commit; see `benchmarks/results/`)._
+
 ## 0.3.0 — 2026‑08‑20 — first hardware run + vectorised kernel
 
 The 0.2.0 tree, written on a machine without CUDA, was built and run for the first time on an

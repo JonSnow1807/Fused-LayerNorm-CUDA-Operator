@@ -1,19 +1,19 @@
-"""fused_layernorm — a small forward-only fused LayerNorm (+GELU) CUDA kernel for PyTorch.
+"""fused_layernorm — fused normalisation CUDA kernels for PyTorch.
 
-Public API:
+LayerNorm and RMSNorm with the fusions eager PyTorch lacks: fused
+residual-add + norm, fp8-E4M3 quantised outputs, a real CUDA backward, and
+torch.compile integration without graph breaks. Public API: the functional
+ops (:func:`layer_norm`, :func:`layer_norm_gelu`, :func:`rms_norm`,
+:func:`fused_add_layer_norm`, :func:`fused_add_rms_norm`,
+:func:`rms_norm_fp8`, :func:`fused_add_rms_norm_fp8`), the drop-in modules
+(:class:`LayerNorm`, :class:`RMSNorm`, :class:`FusedAddLayerNorm`,
+:class:`FusedAddRMSNorm`), the per-model replacement helpers
+(:func:`replace_layernorm`, :func:`replace_rmsnorm` — nothing global is
+monkeypatched), and :func:`is_available`.
 
-* :func:`layer_norm` / :func:`layer_norm_gelu` — ``F.layer_norm``-shaped
-  functions that use the CUDA kernel when it is available and applicable and
-  fall back to PyTorch otherwise (always when gradients are required; the kernel
-  has no backward pass).
-* :class:`LayerNorm` — ``torch.nn.LayerNorm`` subclass routing through
-  :func:`layer_norm`; :meth:`LayerNorm.from_torch` wraps an existing module
-  sharing its parameters.
-* :func:`replace_layernorm` — opt-in, per-model replacement of exact
-  ``nn.LayerNorm`` submodules.  Nothing global is monkeypatched.
-* :func:`is_available` — whether the compiled extension and CUDA are usable.
-
-Importing this package never requires the compiled extension or a GPU.
+Every op falls back to the equivalent PyTorch composite when the fused kernel
+does not apply; importing this package never requires the compiled extension
+or a GPU. See the README for contracts and measured performance.
 """
 
 from .layernorm import (
@@ -47,7 +47,7 @@ from . import _ops  # noqa: E402,F401
 # Single source of truth for the version: setup.py regex-reads this line and
 # injects it into the extension as -DFUSED_LN_VERSION; pyproject.toml reads it
 # via [tool.setuptools.dynamic].
-__version__ = "0.4.0.dev0"
+__version__ = "0.4.0"
 
 __all__ = [
     "FusedAddLayerNorm",
