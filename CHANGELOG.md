@@ -61,10 +61,15 @@ the defects are listed rather than paraphrased away.
 
 ### Measured
 
-Re-measured from a clean clone of this release's code commit (the fairness
-fix above changes the fp8 competitor): see
-`benchmarks/results/` — the v0.4.1 directory README carries the updated
-numbers and provenance. (Filled by the release data commit.)
+Re-measured from a clean clone of this release's code commit `1193a53`
+(`git_dirty=false`), committed under
+`benchmarks/results/2026-08-24_a100-40gb_v041_ops/` — the v0.4.0 directory
+stays as the historical record. The fairness fix moves the fp8-vs-eager
+ratios from 5.6–8.6× to the honest 5.2–7.2×, and the fp8 ops now beat the
+`torch.compile`d chain at **every** measured shape (1.06–1.79×). Everything
+else re-validates within noise: fused_add_rms_norm fp16 1.23–1.58× vs eager
+(0.94–0.99× vs compiled at M ≥ 2048), rms_norm 0.99–1.27× vs aten, training
+step 0.44–1.09× fp16 / 0.54–1.28× fp32.
 
 ## 0.4.0 — 2026‑08‑24 — from one kernel to a fused-normalisation library
 

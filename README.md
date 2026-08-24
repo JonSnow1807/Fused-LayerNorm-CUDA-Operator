@@ -121,49 +121,50 @@ clean clone of the release commit. Competitors include the same composite
 under `torch.compile(fullgraph=True)` — beating only eager would be a
 strawman.
 
-### 2026‑08‑24, A100‑SXM4‑40GB: the v0.4.0 op family
+### 2026‑08‑24, A100‑SXM4‑40GB: the op family (v0.4.1 data)
 
-[`benchmarks/results/2026-08-24_a100-40gb_v040_ops/`](benchmarks/results/2026-08-24_a100-40gb_v040_ops/)
-(fp16 + fp32 files; produced from a clean clone of the release code commit
-`5fdb217`, `git_dirty=false`, full details and honest-reading notes in that
+[`benchmarks/results/2026-08-24_a100-40gb_v041_ops/`](benchmarks/results/2026-08-24_a100-40gb_v041_ops/)
+(fp16 + fp32; produced from a clean clone of code commit `1193a53`,
+`git_dirty=false`; supersedes the v0.4.0 directory after a benchmark-fairness
+fix changed the fp8 competitor — details and honest-reading notes in that
 directory's README). Kernel-time ratios, ours vs competitor, over shapes from
 512×1024 to 4096×8192:
 
 | op (fp16) | vs eager composite | vs `torch.compile`'d composite |
 |---|---|---|
-| `fused_add_rms_norm` | **1.22–1.58×** | 0.95–0.99× at M ≥ 2048 (0.80× at 512×1024) |
-| `fused_add_layer_norm` | 1.00–1.49× | 0.88–1.00× at M ≥ 2048 |
-| `rms_norm` (vs aten's fused `F.rms_norm`) | 0.99–1.27× | 0.76–1.25× |
-| `rms_norm_fp8` dynamic | **5.6–8.6×** | **1.54–1.81× at M ≥ 2048** |
-| `fused_add_rms_norm_fp8` dynamic | **5.7–6.9×** | **1.44–1.77× at M ≥ 2048** |
-| training step fwd+bwd (LN / RMS) | 0.44–1.04× / 0.55–1.10× | — |
+| `fused_add_rms_norm` | **1.23–1.58×** | 0.94–0.99× at M ≥ 2048 (0.80× at 512×1024) |
+| `fused_add_layer_norm` | 1.09–1.49× | 0.88–1.00× at M ≥ 2048 |
+| `rms_norm` (vs aten's fused `F.rms_norm`) | 0.99–1.27× | 0.77–1.24× |
+| `rms_norm_fp8` dynamic | **6.3–7.2×** | **1.06–1.77× — ≥ 1 at every shape** |
+| `fused_add_rms_norm_fp8` dynamic | **5.2–6.5×** | **1.18–1.79× — ≥ 1 at every shape** |
+| training step fwd+bwd (LN / RMS) | 0.44–1.04× / 0.55–1.09× | — |
 
 How to read it honestly:
 
 * **The fused-add ops deliver what they promise in eager mode**: the RMS op
-  at 1.22–1.58× kernel time over the eager composite (62–85 % of datasheet
-  bandwidth), the LayerNorm op at 1.00–1.49× (27–85 %), both at kernel parity
+  at 1.23–1.58× kernel time over the eager composite (62–85 % of datasheet
+  bandwidth), the LayerNorm op at 1.09–1.49× (27–85 %), both at kernel parity
   with Inductor's fused codegen at production shapes. On **wall clock** they
-  beat the eager composite everywhere (1.14–1.49× fp16, 1.15–1.43× fp32) and
-  the compiled composite at most shapes — the compiled composite pays ~90 µs
-  of guard/dispatch per eager call (2048×4096 fp16: ours 54 µs, eager 67 µs,
-  compiled 94 µs) — but ties it at fp16's two largest shapes (0.99–1.01×,
-  e.g. 4096×8192: 207 µs vs 207 µs) and **loses to it by ~15 % at fp32's
-  largest shape** (0.85–0.87× at 4096×8192): once the guard overhead is
-  amortised over a big enough call, Inductor's kernels win that one.
-* **The norm→fp8 fusion is the headline**: 5.6–8.6× over the eager
+  beat the eager composite everywhere (1.14–1.49×, both dtypes) and the
+  compiled composite at most shapes — it pays ~90 µs of guard/dispatch per
+  eager call (2048×4096 fp16: ours 55 µs, compiled 1.65× slower) — but ties
+  it at fp16's two largest shapes (0.99–1.01×) and **loses to it by ~15 % at
+  fp32's largest shape** (0.85–0.87× at 4096×8192): once the guard overhead
+  is amortised over a big enough call, Inductor's kernels win that one.
+* **The norm→fp8 fusion is the headline**: 5.2–7.2× over the eager
   norm→amax→cast chain, and the one place this library beats
-  `torch.compile`'s fused kernel outright (1.44–1.81× at M ≥ 2048) — Inductor
-  fuses the chain but still materialises intermediates the kernel keeps in
-  registers/L1.
+  `torch.compile`'s fused kernel outright — **≥ 1× at every measured shape**
+  (up to 1.79×): Inductor fuses the chain but still materialises
+  intermediates the kernel keeps in registers/L1.
 * Plain `rms_norm` competes with aten's own fused kernel and still comes out
-  ahead at most shapes (up to 1.27×, ~94 % of peak at 4096×4096) — but
-  near-parity, not headlines, is the honest framing there.
+  ahead at most shapes (up to 1.27× fp16, 1.30× fp32; ~94 % of peak at
+  4096×4096) — but near-parity, not headlines, is the honest framing there.
 * **The published weak spots**: at 512×1024 Inductor's small-shape kernels
-  beat ours on pure kernel time (0.48–0.84× depending on op — while paying
-  4.5–11.2× more wall clock per call); fp32's largest shape loses to the
-  compiled composite on wall clock (above); and a full training step
-  measures **0.44–1.10× of PyTorch's autograd** — the backward kernels are
+  beat ours on pure kernel time for the non-fp8 ops (0.52–0.80× — while
+  paying 4.4–10.7× more wall clock per call); fp32's largest shape loses to
+  the compiled composite on wall clock (above); and a full training step
+  measures **0.44–1.09× of PyTorch's autograd in fp16** (fp32: 0.54–1.28×,
+  beating autograd only at the largest shape) — the backward kernels are
   correctness-first (scalar loads, deterministic no-atomics parameter grads,
   gradcheck-verified). Training through these ops is correct and bitwise
   reproducible; making it fast is future work.
