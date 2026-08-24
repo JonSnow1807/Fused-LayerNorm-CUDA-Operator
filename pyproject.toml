@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61", "wheel", "torch>=2.0"]
+requires = ["setuptools>=61", "wheel", "torch>=2.4"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "fused_layernorm"
-version = "0.3.0"
+dynamic = ["version"]
 description = "A small, readable fused LayerNorm(+GELU) forward CUDA kernel for PyTorch"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -17,10 +17,13 @@ classifiers = [
     "Programming Language :: C++",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["torch>=2.0"]
+dependencies = ["torch>=2.4"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+
+[tool.setuptools.dynamic]
+version = { attr = "fused_layernorm.__version__" }
 
 [project.urls]
 Homepage = "https://github.com/JonSnow1807/Fused-LayerNorm-CUDA-Operator"

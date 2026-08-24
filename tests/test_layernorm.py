@@ -37,105 +37,23 @@ import fused_layernorm
 from fused_layernorm import LayerNorm, layer_norm, layer_norm_gelu, replace_layernorm
 
 # --------------------------------------------------------------------------- #
-# Skip logic
+# Shared helpers (skip logic, tolerances, factories) live in tests/_helpers.py
+# so the other test files can use them too.
 # --------------------------------------------------------------------------- #
 
-DEVICE = os.environ.get("FUSED_LN_TEST_DEVICE", "cuda")
-
-# The compiled extension module (``None`` when it is not built).
-_ext = fused_layernorm.layernorm._ext
-
-_backend_ok = (
-    fused_layernorm.is_available() if DEVICE == "cuda" else _ext is not None
+from _helpers import (  # noqa: E402
+    ALL_DTYPES,
+    DEVICE,
+    SHAPES,
+    TOL,
+    _affine,
+    _assert_close,
+    _ext,
+    _randn,
+    _ref_layer_norm,
+    requires_cuda_ext,
+    requires_real_cuda,
 )
-requires_cuda_ext = pytest.mark.skipif(
-    not _backend_ok,
-    reason="fused_layernorm_cuda extension or CUDA is unavailable",
-)
-requires_real_cuda = pytest.mark.skipif(
-    DEVICE != "cuda" or not torch.cuda.is_available(),
-    reason="needs a real CUDA device (FUSED_LN_TEST_DEVICE is not 'cuda' or CUDA is unavailable)",
-)
-
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
-
-# Numerical-agreement tolerances vs. F.layer_norm.  fp16 / bf16 outputs are
-# compared against F.layer_norm computed in fp32 and cast back (PyTorch also
-# accumulates in fp32 for those dtypes); the rtol values for those two are
-# torch.testing.assert_close's own dtype defaults.
-TOL = {
-    torch.float32: dict(atol=1e-5, rtol=1e-4),
-    torch.float64: dict(atol=1e-12, rtol=1e-10),
-    torch.float16: dict(atol=1e-2, rtol=1e-3),
-    torch.bfloat16: dict(atol=5e-2, rtol=1.6e-2),
-}
-
-SHAPES = [
-    (1, 1),
-    (1, 17),
-    (13, 13),
-    (17, 1023),
-    (32, 768),
-    (32, 1024),
-    (32, 4096),
-    (64, 4096),
-    (1, 4095),
-    (1, 4097),
-    (1, 32768),
-    (1000, 1),
-    (512, 512),
-    (2048, 4096),
-]
-
-ALL_DTYPES = [torch.float32, torch.float64, torch.float16, torch.bfloat16]
-
-
-def _randn(shape: Tuple[int, ...], dtype: torch.dtype, device: str = DEVICE) -> torch.Tensor:
-    gen_dtype = torch.float64 if dtype == torch.float64 else torch.float32
-    return torch.randn(shape, dtype=gen_dtype, device=device).to(dtype)
-
-
-def _affine(
-    n: int, dtype: torch.dtype, device: str = DEVICE
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Random, deliberately non-identity weight and bias of length ``n``."""
-    gen_dtype = torch.float64 if dtype == torch.float64 else torch.float32
-    weight = torch.empty(n, dtype=gen_dtype, device=device).uniform_(0.5, 1.5).to(dtype)
-    bias = torch.empty(n, dtype=gen_dtype, device=device).normal_().to(dtype)
-    return weight, bias
-
-
-def _ref_layer_norm(
-    x: torch.Tensor,
-    weight: Optional[torch.Tensor],
-    bias: Optional[torch.Tensor],
-    eps: float = 1e-5,
-    approximate: Optional[str] = None,
-) -> torch.Tensor:
-    """``F.layer_norm`` over the last dim (optionally followed by ``F.gelu``).
-
-    For fp16 / bf16 inputs the whole reference is computed in fp32 and cast
-    back once at the end, mirroring what both PyTorch and the kernel do.
-    """
-    n = x.shape[-1]
-    out_dtype = x.dtype
-    if out_dtype in (torch.float16, torch.bfloat16):
-        x = x.float()
-        weight = None if weight is None else weight.float()
-        bias = None if bias is None else bias.float()
-    y = F.layer_norm(x, (n,), weight, bias, eps)
-    if approximate is not None:
-        y = F.gelu(y, approximate=approximate)
-    return y.to(out_dtype)
-
-
-def _assert_close(actual: torch.Tensor, expected: torch.Tensor) -> None:
-    assert actual.shape == expected.shape
-    assert actual.dtype == expected.dtype
-    assert actual.device == expected.device
-    torch.testing.assert_close(actual, expected, **TOL[expected.dtype])
 
 
 @contextlib.contextmanager
@@ -164,7 +82,12 @@ def _no_mha_fastpath() -> Iterator[None]:
 
 
 def test_package_exports_and_version() -> None:
-    assert fused_layernorm.__version__ == "0.3.0"
+    # The version is single-sourced from fused_layernorm/__init__.py (setup.py
+    # and the extension read it from there), so assert the format, not a
+    # literal that would have to be kept in sync by hand.
+    import re as _re
+
+    assert _re.fullmatch(r"\d+\.\d+\.\d+([a-zA-Z0-9.]*)?", fused_layernorm.__version__)
     for name in ("layer_norm", "layer_norm_gelu", "LayerNorm", "replace_layernorm", "is_available"):
         assert hasattr(fused_layernorm, name)
     assert isinstance(fused_layernorm.is_available(), bool)

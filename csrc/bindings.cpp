@@ -7,7 +7,7 @@
 // Exposed module (name comes from TORCH_EXTENSION_NAME, i.e. "fused_layernorm_cuda"):
 //   layernorm(input, weight=None, bias=None, eps=1e-5) -> Tensor
 //   layernorm_gelu(input, weight=None, bias=None, eps=1e-5, approximate="none") -> Tensor
-//   __version__ == "0.3.0"
+//   __version__ == the package version (injected by setup.py at build time)
 //
 // Both functions are FORWARD ONLY: the returned tensor has no grad_fn.
 
@@ -15,6 +15,16 @@
 
 #include <optional>
 #include <string>
+
+// Version injected by setup.py as an unquoted token (-DFUSED_LN_VERSION=0.4.0);
+// stringified here (pybind11 VERSION_INFO idiom). "unknown" only for builds
+// that bypass setup.py.
+#ifndef FUSED_LN_VERSION
+#define FUSED_LN_VERSION unknown
+#endif
+#define FLN_STRINGIFY_(x) #x
+#define FLN_STRINGIFY(x) FLN_STRINGIFY_(x)
+#define FLN_VERSION_STRING FLN_STRINGIFY(FUSED_LN_VERSION)
 
 #include "layernorm.h"
 
@@ -72,7 +82,10 @@ at::Tensor layernorm_impl(const at::Tensor& input,
   const at::Tensor x2d = input.contiguous().view({M, N});
   at::Tensor y2d = at::empty_like(x2d);  // same dtype/device, contiguous (M, N)
 
-  layernorm_cuda_launch(x2d, w, b, y2d, eps, gelu, gelu_tanh);
+  using fused_norm::NormEpilogue;
+  const NormEpilogue epi = !gelu ? NormEpilogue::kNone
+                                 : (gelu_tanh ? NormEpilogue::kGeluTanh : NormEpilogue::kGeluErf);
+  layernorm_cuda_launch(x2d, w, b, y2d, eps, epi);
 
   return y2d.view(input.sizes());  // back to the caller's shape
 }
@@ -119,5 +132,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("input"), py::arg("weight") = py::none(), py::arg("bias") = py::none(),
         py::arg("eps") = 1e-5, py::arg("approximate") = "none");
 
-  m.attr("__version__") = "0.3.0";
+  m.attr("__version__") = FLN_VERSION_STRING;
 }

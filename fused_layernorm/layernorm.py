@@ -31,11 +31,21 @@ kernel is only used for CUDA tensors of dtype float32/float64/float16/bfloat16.
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Union
+from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from ._common import (
+    _as_shape,
+    _autocast_active,
+    _eligible,
+    _needs_grad,
+    _replace_modules,
+    _same_dtype_and_device,
+    _Shape,
+)
 
 __all__ = [
     "is_available",
@@ -53,9 +63,6 @@ try:  # pragma: no cover - exercised only when the extension is built
 except ImportError:
     _ext = None
 
-_Shape = Union[int, Sequence[int], torch.Size]
-
-
 def is_available() -> bool:
     """Return ``True`` iff the compiled extension imported and CUDA is usable.
 
@@ -63,37 +70,6 @@ def is_available() -> bool:
     runs the plain PyTorch implementation.
     """
     return _ext is not None and torch.cuda.is_available()
-
-
-def _as_shape(normalized_shape: _Shape) -> tuple:
-    if isinstance(normalized_shape, int):
-        return (normalized_shape,)
-    return tuple(normalized_shape)
-
-
-def _needs_grad(*tensors: Optional[torch.Tensor]) -> bool:
-    """True if autograd would need to record an op over ``tensors``."""
-    return torch.is_grad_enabled() and any(
-        t is not None and t.requires_grad for t in tensors
-    )
-
-
-def _same_dtype_and_device(input: torch.Tensor, *tensors: Optional[torch.Tensor]) -> bool:
-    """True if every given (non-None) tensor has ``input``'s dtype and device."""
-    return all(
-        t is None or (t.dtype == input.dtype and t.device == input.device) for t in tensors
-    )
-
-
-def _autocast_active() -> bool:
-    """True while a CUDA autocast region is active.
-
-    The no-argument form of ``torch.is_autocast_enabled`` reports the CUDA
-    autocast state on every torch >= 2.0 (the ``device_type`` argument only
-    exists on newer versions); the fused path is CUDA-only, so that is the
-    state we need.
-    """
-    return torch.is_autocast_enabled()
 
 
 def _use_fused(
@@ -118,15 +94,8 @@ def _use_fused(
     those calls to PyTorch keeps this module a drop-in replacement (same
     output dtype, same errors) instead of introducing new semantics.
     """
-    return (
-        _ext is not None
-        and input.is_cuda
-        and input.dim() >= 1
-        and len(normalized_shape) == 1
-        and normalized_shape[-1] == input.shape[-1]
-        and _same_dtype_and_device(input, weight, bias)
-        and not _autocast_active()
-        and not _needs_grad(input, weight, bias)
+    return _eligible(
+        input, normalized_shape, weight, bias, ext_available=_ext is not None
     )
 
 
@@ -247,11 +216,9 @@ def replace_layernorm(model: nn.Module) -> int:
     asked for it, and is very hard to undo; a per-model, opt-in replacement is
     the only safe interface.
     """
-    count = 0
-    for name, child in list(model.named_children()):
-        if type(child) is nn.LayerNorm and len(child.normalized_shape) == 1:
-            setattr(model, name, LayerNorm.from_torch(child))
-            count += 1
-        else:
-            count += replace_layernorm(child)
-    return count
+    return _replace_modules(
+        model,
+        nn.LayerNorm,
+        LayerNorm.from_torch,
+        predicate=lambda m: len(m.normalized_shape) == 1,
+    )

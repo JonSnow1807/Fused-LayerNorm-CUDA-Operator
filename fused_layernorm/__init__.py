@@ -24,7 +24,10 @@ from .layernorm import (
     replace_layernorm,
 )
 
-__version__ = "0.3.0"
+# Single source of truth for the version: setup.py regex-reads this line and
+# injects it into the extension as -DFUSED_LN_VERSION; pyproject.toml reads it
+# via [tool.setuptools.dynamic].
+__version__ = "0.4.0.dev0"
 
 __all__ = [
     "LayerNorm",

@@ -1,4 +1,4 @@
 # Runtime + test requirements. Building the extension additionally needs a CUDA toolkit
 # (nvcc) and a CUDA-enabled torch; the benchmarks use only torch + the standard library.
-torch>=2.0
+torch>=2.4
 pytest>=7
