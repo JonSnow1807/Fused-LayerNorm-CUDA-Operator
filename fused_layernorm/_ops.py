@@ -14,12 +14,15 @@ Registration happens unconditionally at import (it does not need the compiled
 extension or a GPU); only *calling* an op requires them, and the wrappers'
 eligibility checks route those calls away when the extension is missing.
 
-Every op here is CUDA-only, forward-only for now (the ``_fwd_train``/``_bwd``
-pairs with ``register_autograd`` land with the backward kernels), and
-``mutates_args=()`` unless stated otherwise.
+Every op here is CUDA-only and ``mutates_args=()`` unless stated otherwise.
+
+NOTE: this module deliberately has no ``from __future__ import annotations``
+line - that would turn the signatures into string annotations, which
+``torch.library``'s schema inference on torch 2.4 cannot resolve (2.13 can;
+the torch-2.4 CI leg caught this). The type objects must be real at
+decoration time.
 """
 
-from __future__ import annotations
 
 from typing import Optional
 

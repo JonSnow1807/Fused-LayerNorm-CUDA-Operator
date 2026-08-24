@@ -52,7 +52,7 @@ jobs:
 
   cuda-build:
     runs-on: ubuntu-latest
-    container: pytorch/pytorch:2.13.0-cuda12.9-cudnn9-devel
+    container: pytorch/pytorch:2.13.0-cuda12.6-cudnn9-devel
     env:
       # No GPU on the runner, so arch autodetection would fail; pin the
       # architectures the committed benchmarks target (A100) plus Hopper.
