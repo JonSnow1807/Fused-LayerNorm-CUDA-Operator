@@ -48,6 +48,7 @@ setup(
                 "csrc/bindings.cpp",
                 "csrc/layernorm_cuda_kernel.cu",
                 "csrc/norm_fwd_rms.cu",
+                "csrc/norm_fwd_ln.cu",
             ],
             extra_compile_args={"cxx": list(_FLAGS), "nvcc": list(_FLAGS)},
         )

@@ -63,3 +63,19 @@ void rmsnorm_fwd_cuda_launch(const at::Tensor& input2d,
                              at::Tensor& rstd_or_undef,
                              double eps,
                              fused_norm::NormEpilogue epi);
+
+// Launches the fused residual-add + LayerNorm forward (norm_fwd_ln.cu):
+//   residual_out = round(input + residual_in); output = layer_norm(residual_out).
+// residual_out MAY alias residual_in (in-place). mean/rstd (when defined):
+// contiguous (M,) tensors of the accumulation dtype receiving the per-row
+// statistics of the ROUNDED sum - what autograd saves. Same 2-D
+// preconditions as layernorm_cuda_launch for every tensor.
+void fused_add_layernorm_fwd_cuda_launch(const at::Tensor& input2d,
+                                         const at::Tensor& residual_in2d,
+                                         const at::Tensor& weight_or_undef,
+                                         const at::Tensor& bias_or_undef,
+                                         at::Tensor& output2d,
+                                         at::Tensor& residual_out2d,
+                                         at::Tensor& mean_or_undef,
+                                         at::Tensor& rstd_or_undef,
+                                         double eps);

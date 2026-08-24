@@ -97,6 +97,88 @@ at::Tensor layernorm(const at::Tensor& input,
   return layernorm_impl(input, weight, bias, eps, /*gelu=*/false, /*gelu_tanh=*/false);
 }
 
+// Shared implementation of the fused residual-add + norm entry points.
+//   residual_out = round(input + residual); out = norm(residual_out)
+// Returns (out, residual_out). inplace=true writes the sum into `residual`'s
+// storage (which must be contiguous - a silent .contiguous() copy would make
+// the mutation invisible to the caller) and is inference-only.
+std::tuple<at::Tensor, at::Tensor> fused_add_impl(const at::Tensor& input,
+                                                  at::Tensor& residual,
+                                                  const std::optional<at::Tensor>& weight,
+                                                  const std::optional<at::Tensor>& bias,
+                                                  double eps,
+                                                  bool inplace,
+                                                  bool rms) {
+  TORCH_CHECK(input.is_cuda(), "input must be a CUDA tensor, but it is on ", input.device());
+  TORCH_CHECK(input.dim() >= 1,
+              "input must have rank >= 1 (normalization is over the last dimension), "
+              "got a 0-d tensor");
+  const auto st = input.scalar_type();
+  TORCH_CHECK(st == at::kFloat || st == at::kDouble || st == at::kHalf || st == at::kBFloat16,
+              "input dtype must be float32, float64, float16 or bfloat16, got ", st);
+  TORCH_CHECK(residual.sizes() == input.sizes(), "residual must have input's shape (",
+              input.sizes(), "), got ", residual.sizes());
+  TORCH_CHECK(residual.scalar_type() == st, "residual dtype (", residual.scalar_type(),
+              ") must match input dtype (", st, ")");
+  TORCH_CHECK(residual.device() == input.device(),
+              "residual must be on the same device as input");
+  const int64_t N = input.size(-1);
+
+  const at::Tensor w = check_affine(weight, "weight", input, N);
+  const at::Tensor b = check_affine(bias, "bias", input, N);
+
+  if (inplace) {
+    TORCH_CHECK(residual.is_contiguous(),
+                "inplace fused_add requires a contiguous residual (a hidden copy would "
+                "make the in-place update invisible); pass inplace=False or call "
+                ".contiguous() yourself");
+    TORCH_CHECK(!(at::GradMode::is_enabled() &&
+                  (input.requires_grad() || residual.requires_grad() ||
+                   (w.defined() && w.requires_grad()) || (b.defined() && b.requires_grad()))),
+                "inplace fused_add is inference-only; use the out-of-place op under autograd");
+  }
+
+  if (input.numel() == 0) {
+    at::Tensor z = inplace ? residual : at::empty_like(input);
+    return {at::empty_like(input), z};
+  }
+  const int64_t M = input.numel() / N;
+
+  const at::Tensor x2d = input.contiguous().view({M, N});
+  const at::Tensor r2d = residual.contiguous().view({M, N});  // no-op copy when inplace (checked)
+  at::Tensor y2d = at::empty_like(x2d);
+  at::Tensor z2d = inplace ? r2d : at::empty_like(x2d);
+  at::Tensor undef;
+
+  if (rms) {
+    rmsnorm_fwd_cuda_launch(x2d, r2d, w, y2d, z2d, /*rstd=*/undef, eps,
+                            fused_norm::NormEpilogue::kNone);
+  } else {
+    fused_add_layernorm_fwd_cuda_launch(x2d, r2d, w, b, y2d, z2d, /*mean=*/undef,
+                                        /*rstd=*/undef, eps);
+  }
+
+  at::Tensor z_out = inplace ? residual : z2d.view(input.sizes());
+  return {y2d.view(input.sizes()), z_out};
+}
+
+std::tuple<at::Tensor, at::Tensor> fused_add_layernorm(const at::Tensor& input,
+                                                       at::Tensor& residual,
+                                                       const std::optional<at::Tensor>& weight,
+                                                       const std::optional<at::Tensor>& bias,
+                                                       double eps,
+                                                       bool inplace) {
+  return fused_add_impl(input, residual, weight, bias, eps, inplace, /*rms=*/false);
+}
+
+std::tuple<at::Tensor, at::Tensor> fused_add_rmsnorm(const at::Tensor& input,
+                                                     at::Tensor& residual,
+                                                     const std::optional<at::Tensor>& weight,
+                                                     double eps,
+                                                     bool inplace) {
+  return fused_add_impl(input, residual, weight, std::nullopt, eps, inplace, /*rms=*/true);
+}
+
 // RMSNorm over the last dimension: y = x * rsqrt(mean(x^2) + eps) [* weight].
 // No bias (RMSNorm has none); eps must already be resolved by the caller
 // (the F.rms_norm eps=None machine-epsilon convention lives in Python).
@@ -172,6 +254,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "weight: optional 1-D tensor of length input.shape[-1] with input's dtype/device.\n"
         "Forward only from this entry point: the result has no grad_fn.",
         py::arg("input"), py::arg("weight") = py::none(), py::arg("eps") = 1e-6);
+
+  m.def("fused_add_layernorm", &fused_add_layernorm,
+        "Fused residual-add + LayerNorm: residual_out = input + residual (rounded once);\n"
+        "out = layer_norm(residual_out). Returns (out, residual_out). With inplace=True the\n"
+        "sum is written into `residual`'s storage (contiguous required; inference-only).\n"
+        "Statistics are computed over the rounded sum, so `out` equals a plain layernorm of\n"
+        "residual_out bitwise. Forward only from this entry point.",
+        py::arg("input"), py::arg("residual"), py::arg("weight") = py::none(),
+        py::arg("bias") = py::none(), py::arg("eps") = 1e-5, py::arg("inplace") = false);
+
+  m.def("fused_add_rmsnorm", &fused_add_rmsnorm,
+        "Fused residual-add + RMSNorm: residual_out = input + residual (rounded once);\n"
+        "out = rms_norm(residual_out). Returns (out, residual_out). Same inplace/aliasing\n"
+        "rules as fused_add_layernorm; eps must be concrete (resolve eps=None in Python).",
+        py::arg("input"), py::arg("residual"), py::arg("weight") = py::none(),
+        py::arg("eps") = 1e-6, py::arg("inplace") = false);
 
   m.attr("__version__") = FLN_VERSION_STRING;
 }

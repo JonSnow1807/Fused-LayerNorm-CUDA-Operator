@@ -72,6 +72,92 @@ def _(input, weight=None, eps=1e-6):
     return input.new_empty(input.shape)
 
 
+# --------------------------------------------------------------------------- #
+# Fused residual-add + norm.
+# Pure variants return fresh (out, new_residual); the underscore variants
+# mutate `residual` in place (declared via mutates_args so functionalization
+# under torch.compile handles them correctly) and return only `out` - the
+# wrapper re-packs (out, residual). custom ops may not return aliases of
+# their inputs, which is why the mutating variants cannot return the residual.
+# --------------------------------------------------------------------------- #
+
+
+@torch.library.custom_op(
+    "fused_layernorm::fused_add_layer_norm", mutates_args=(), device_types="cuda"
+)
+def fused_add_layer_norm(
+    input: Tensor,
+    residual: Tensor,
+    weight: Optional[Tensor] = None,
+    bias: Optional[Tensor] = None,
+    eps: float = 1e-5,
+) -> tuple[Tensor, Tensor]:
+    return _require_ext().fused_add_layernorm(input, residual, weight, bias, eps, False)
+
+
+@fused_add_layer_norm.register_fake
+def _(input, residual, weight=None, bias=None, eps=1e-5):
+    return input.new_empty(input.shape), input.new_empty(input.shape)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::fused_add_layer_norm_",
+    mutates_args={"residual"},
+    device_types="cuda",
+)
+def fused_add_layer_norm_(
+    input: Tensor,
+    residual: Tensor,
+    weight: Optional[Tensor] = None,
+    bias: Optional[Tensor] = None,
+    eps: float = 1e-5,
+) -> Tensor:
+    out, _ = _require_ext().fused_add_layernorm(input, residual, weight, bias, eps, True)
+    return out
+
+
+@fused_add_layer_norm_.register_fake
+def _(input, residual, weight=None, bias=None, eps=1e-5):
+    return input.new_empty(input.shape)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::fused_add_rms_norm", mutates_args=(), device_types="cuda"
+)
+def fused_add_rms_norm(
+    input: Tensor,
+    residual: Tensor,
+    weight: Optional[Tensor] = None,
+    eps: float = 1e-6,
+) -> tuple[Tensor, Tensor]:
+    return _require_ext().fused_add_rmsnorm(input, residual, weight, eps, False)
+
+
+@fused_add_rms_norm.register_fake
+def _(input, residual, weight=None, eps=1e-6):
+    return input.new_empty(input.shape), input.new_empty(input.shape)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::fused_add_rms_norm_",
+    mutates_args={"residual"},
+    device_types="cuda",
+)
+def fused_add_rms_norm_(
+    input: Tensor,
+    residual: Tensor,
+    weight: Optional[Tensor] = None,
+    eps: float = 1e-6,
+) -> Tensor:
+    out, _ = _require_ext().fused_add_rmsnorm(input, residual, weight, eps, True)
+    return out
+
+
+@fused_add_rms_norm_.register_fake
+def _(input, residual, weight=None, eps=1e-6):
+    return input.new_empty(input.shape)
+
+
 @torch.library.custom_op(
     "fused_layernorm::layer_norm_gelu", mutates_args=(), device_types="cuda"
 )
