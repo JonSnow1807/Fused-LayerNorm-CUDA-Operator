@@ -56,6 +56,22 @@ def _(input, weight=None, bias=None, eps=1e-5):
     return input.new_empty(input.shape)
 
 
+@torch.library.custom_op("fused_layernorm::rms_norm", mutates_args=(), device_types="cuda")
+def rms_norm(
+    input: Tensor,
+    weight: Optional[Tensor] = None,
+    eps: float = 1e-6,
+) -> Tensor:
+    # eps is always concrete here: the wrapper resolves the F.rms_norm
+    # eps=None machine-epsilon convention before calling.
+    return _require_ext().rmsnorm(input, weight, eps)
+
+
+@rms_norm.register_fake
+def _(input, weight=None, eps=1e-6):
+    return input.new_empty(input.shape)
+
+
 @torch.library.custom_op(
     "fused_layernorm::layer_norm_gelu", mutates_args=(), device_types="cuda"
 )

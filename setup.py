@@ -44,7 +44,11 @@ setup(
     ext_modules=[
         CUDAExtension(
             name="fused_layernorm_cuda",
-            sources=["csrc/bindings.cpp", "csrc/layernorm_cuda_kernel.cu"],
+            sources=[
+                "csrc/bindings.cpp",
+                "csrc/layernorm_cuda_kernel.cu",
+                "csrc/norm_fwd_rms.cu",
+            ],
             extra_compile_args={"cxx": list(_FLAGS), "nvcc": list(_FLAGS)},
         )
     ],

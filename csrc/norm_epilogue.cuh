@@ -8,6 +8,17 @@
 
 namespace fused_norm {
 
+// Epilogue functors for the generic forward kernels (norm_fwd_kernels.cuh).
+// Each functor defines the element type it stores (out_t) and converts the
+// fp32/fp64 normalised value on the way out. The fp8 functors (which also set
+// kNeedsRowMax and quantise) are added with the quant kernels.
+template <typename scalar_t, typename acc_t>
+struct EpiNone {
+  using out_t = scalar_t;
+  static constexpr bool kNeedsRowMax = false;
+  __device__ __forceinline__ out_t store(acc_t v) const { return static_cast<out_t>(v); }
+};
+
 // GELU, exact form:  0.5 * x * (1 + erf(x / sqrt(2))).
 // The literal is 1/sqrt(2). Called unqualified so the float / double overloads of erf resolve
 // for acc_t = float / double respectively.

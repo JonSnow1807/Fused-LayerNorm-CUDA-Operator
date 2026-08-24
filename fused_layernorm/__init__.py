@@ -23,6 +23,11 @@ from .layernorm import (
     layer_norm_gelu,
     replace_layernorm,
 )
+from .rms_norm import (
+    RMSNorm,
+    replace_rmsnorm,
+    rms_norm,
+)
 
 # Registers torch.ops.fused_layernorm.* (needed by the fused paths above and
 # by torch.compile tracing). Import order matters only in that this must run
@@ -36,9 +41,12 @@ __version__ = "0.4.0.dev0"
 
 __all__ = [
     "LayerNorm",
+    "RMSNorm",
     "is_available",
     "layer_norm",
     "layer_norm_gelu",
     "replace_layernorm",
+    "replace_rmsnorm",
+    "rms_norm",
     "__version__",
 ]

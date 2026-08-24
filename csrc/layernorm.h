@@ -41,3 +41,25 @@ void layernorm_cuda_launch(const at::Tensor& input2d,
                            at::Tensor& output2d,
                            double eps,
                            fused_norm::NormEpilogue epi);
+
+// Launches the RMSNorm forward kernel (norm_fwd_rms.cu) on the current CUDA
+// stream. Same 2-D preconditions as above, plus:
+//   * residual_in2d/residual_out2d: BOTH undefined (plain RMSNorm) or BOTH
+//     defined contiguous (M, N) tensors of input2d's dtype/device (fused
+//     residual-add: residual_out receives round(input + residual_in), and the
+//     norm consumes that rounded sum). residual_out MAY alias residual_in
+//     (in-place).
+//   * There is no bias (RMSNorm has none).
+//   * rstd_or_undef: undefined, or a contiguous (M,) tensor of the
+//     accumulation dtype (fp32; fp64 for double inputs) that receives the
+//     per-row rsqrt(mean(z^2) + eps) - what autograd saves.
+//   * eps must already be resolved (the F.rms_norm eps=None convention is a
+//     Python-side concern).
+void rmsnorm_fwd_cuda_launch(const at::Tensor& input2d,
+                             const at::Tensor& residual_in2d_or_undef,
+                             const at::Tensor& weight_or_undef,
+                             at::Tensor& output2d,
+                             at::Tensor& residual_out2d_or_undef,
+                             at::Tensor& rstd_or_undef,
+                             double eps,
+                             fused_norm::NormEpilogue epi);

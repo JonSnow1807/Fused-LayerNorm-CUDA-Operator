@@ -97,6 +97,38 @@ at::Tensor layernorm(const at::Tensor& input,
   return layernorm_impl(input, weight, bias, eps, /*gelu=*/false, /*gelu_tanh=*/false);
 }
 
+// RMSNorm over the last dimension: y = x * rsqrt(mean(x^2) + eps) [* weight].
+// No bias (RMSNorm has none); eps must already be resolved by the caller
+// (the F.rms_norm eps=None machine-epsilon convention lives in Python).
+at::Tensor rmsnorm(const at::Tensor& input,
+                   const std::optional<at::Tensor>& weight,
+                   double eps) {
+  TORCH_CHECK(input.is_cuda(), "input must be a CUDA tensor, but it is on ", input.device());
+  TORCH_CHECK(input.dim() >= 1,
+              "input must have rank >= 1 (normalization is over the last dimension), "
+              "got a 0-d tensor");
+  const auto st = input.scalar_type();
+  TORCH_CHECK(st == at::kFloat || st == at::kDouble || st == at::kHalf || st == at::kBFloat16,
+              "input dtype must be float32, float64, float16 or bfloat16, got ", st);
+  const int64_t N = input.size(-1);
+
+  const at::Tensor w = check_affine(weight, "weight", input, N);
+
+  if (input.numel() == 0) {
+    return at::empty_like(input);
+  }
+  const int64_t M = input.numel() / N;
+
+  const at::Tensor x2d = input.contiguous().view({M, N});
+  at::Tensor y2d = at::empty_like(x2d);
+
+  at::Tensor undef;
+  rmsnorm_fwd_cuda_launch(x2d, /*residual_in=*/undef, w, y2d, /*residual_out=*/undef,
+                          /*rstd=*/undef, eps, fused_norm::NormEpilogue::kNone);
+
+  return y2d.view(input.sizes());
+}
+
 at::Tensor layernorm_gelu(const at::Tensor& input,
                           const std::optional<at::Tensor>& weight,
                           const std::optional<at::Tensor>& bias,
@@ -131,6 +163,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "Same argument rules as layernorm(). Forward only: the result has no grad_fn.",
         py::arg("input"), py::arg("weight") = py::none(), py::arg("bias") = py::none(),
         py::arg("eps") = 1e-5, py::arg("approximate") = "none");
+
+  m.def("rmsnorm", &rmsnorm,
+        "RMSNorm over the last dimension of a CUDA tensor.\n\n"
+        "Equivalent to torch.nn.functional.rms_norm(input, (input.shape[-1],), weight, eps)\n"
+        "with a concrete eps (resolve eps=None on the Python side).\n"
+        "input: CUDA tensor, rank >= 1, float32/float64/float16/bfloat16.\n"
+        "weight: optional 1-D tensor of length input.shape[-1] with input's dtype/device.\n"
+        "Forward only from this entry point: the result has no grad_fn.",
+        py::arg("input"), py::arg("weight") = py::none(), py::arg("eps") = 1e-6);
 
   m.attr("__version__") = FLN_VERSION_STRING;
 }
