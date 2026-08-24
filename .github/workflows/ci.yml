@@ -1,0 +1,75 @@
+# CI for fused_layernorm.
+#
+# What this CI verifies:
+#   * cpu-tests: the package imports without the extension, the PyTorch
+#     fallback paths behave (the CPU-runnable subset of the pytest suite),
+#     across the supported torch range.
+#   * cuda-build: the CUDA kernels compile for sm80/sm90 against a pinned
+#     torch/CUDA toolchain, and the built extension is importable.
+#
+# What this CI can NOT verify (no GPU runners): kernel numerics, autograd
+# correctness on device, performance. Those are covered by the committed
+# hardware test/benchmark runs under benchmarks/results/ (each with git
+# provenance in its JSON metadata) — see benchmarks/README.md.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.10"
+            torch: "2.4.*"
+          - python: "3.12"
+            torch: "2.13.*"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install CPU torch + pytest
+        run: |
+          pip install "torch==${{ matrix.torch }}" --index-url https://download.pytorch.org/whl/cpu
+          pip install pytest
+      - name: Run test suite (GPU tests auto-skip)
+        # Run from the repo root without installing: the package is designed
+        # to import without the compiled extension, and every CUDA-marked test
+        # skips itself when the extension or a GPU is missing.
+        run: python -m pytest tests -q
+
+  cuda-build:
+    runs-on: ubuntu-latest
+    container: pytorch/pytorch:2.13.0-cuda12.9-cudnn9-devel
+    env:
+      # No GPU on the runner, so arch autodetection would fail; pin the
+      # architectures the committed benchmarks target (A100) plus Hopper.
+      TORCH_CUDA_ARCH_LIST: "8.0;9.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile the extension
+        run: python setup.py build_ext --inplace
+      - name: Extension imports and reports the package version
+        run: |
+          python - <<'EOF'
+          import torch  # loads libc10 before the extension
+          import fused_layernorm_cuda as ext
+          import re, pathlib
+          pkg = re.search(r'^__version__ = "([^"]+)"$',
+                          pathlib.Path("fused_layernorm/__init__.py").read_text(),
+                          re.M).group(1)
+          assert ext.__version__ == pkg, (ext.__version__, pkg)
+          print("fused_layernorm_cuda", ext.__version__, "compiled OK")
+          EOF
