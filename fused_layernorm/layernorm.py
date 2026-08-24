@@ -125,9 +125,16 @@ def layer_norm(
     and errors alike -- is unchanged from ``nn.LayerNorm``.
     """
     shape = _as_shape(normalized_shape)
-    if _use_fused(input, shape, weight, bias):
-        # Through the dispatcher (not the raw pybind call) so the same path
-        # works under torch.compile without a graph break; see _ops.py.
+    # Through the dispatcher (not the raw pybind call) so the same path works
+    # under torch.compile without a graph break; see _ops.py. Since v0.4.0
+    # gradient-requiring calls no longer fall back to PyTorch: they run the
+    # fwd_train op (whose output is bitwise identical to the inference op)
+    # with a real CUDA backward attached via register_autograd.
+    if _eligible(input, shape, weight, bias, ext_available=_ext is not None,
+                 needs_grad_ok=True):
+        if _needs_grad(input, weight, bias):
+            y, _, _ = torch.ops.fused_layernorm.layer_norm_fwd_train(input, weight, bias, eps)
+            return y
         return torch.ops.fused_layernorm.layer_norm(input, weight, bias, eps)
     return F.layer_norm(input, shape, weight, bias, eps)
 

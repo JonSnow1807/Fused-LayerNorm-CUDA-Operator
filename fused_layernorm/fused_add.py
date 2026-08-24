@@ -80,7 +80,13 @@ def fused_add_layer_norm(
             return out, residual
         residual = residual.add_(input)
         return F.layer_norm(residual, shape, weight, bias, eps), residual
-    if _eligible(input, shape, residual, weight, bias, ext_available=_ext is not None):
+    if _eligible(input, shape, residual, weight, bias, ext_available=_ext is not None,
+                 needs_grad_ok=True):
+        if _needs_grad(input, residual, weight, bias):
+            y, z, _, _ = torch.ops.fused_layernorm.fused_add_layer_norm_fwd_train(
+                input, residual, weight, bias, eps
+            )
+            return y, z
         return torch.ops.fused_layernorm.fused_add_layer_norm(
             input, residual, weight, bias, eps
         )
@@ -112,10 +118,15 @@ def fused_add_rms_norm(
             return out, residual
         residual = residual.add_(input)
         return F.rms_norm(residual, shape, weight, eps), residual
-    if _eligible(input, shape, residual, weight, ext_available=_ext is not None):
-        return torch.ops.fused_layernorm.fused_add_rms_norm(
-            input, residual, weight, _resolve_rms_eps(input.dtype, eps)
-        )
+    if _eligible(input, shape, residual, weight, ext_available=_ext is not None,
+                 needs_grad_ok=True):
+        eps_c = _resolve_rms_eps(input.dtype, eps)
+        if _needs_grad(input, residual, weight):
+            y, z, _ = torch.ops.fused_layernorm.fused_add_rms_norm_fwd_train(
+                input, residual, weight, eps_c
+            )
+            return y, z
+        return torch.ops.fused_layernorm.fused_add_rms_norm(input, residual, weight, eps_c)
     z = input + residual
     return F.rms_norm(z, shape, weight, eps), z
 

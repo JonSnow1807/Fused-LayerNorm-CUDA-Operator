@@ -128,8 +128,9 @@ def test_inplace_noncontiguous_residual_rejected() -> None:
 
 @pytest.mark.cuda
 @requires_cuda_ext
-def test_grad_calls_fall_back_and_match_composite() -> None:
-    """Until the backward phase lands, autograd calls run the composite."""
+def test_grad_calls_use_kernel_and_match_composite() -> None:
+    """Autograd calls run the fused fwd_train + CUDA backward (since v0.4.0);
+    grads for BOTH outputs must match the eager composite's."""
     x, r, w, b = _inputs((16, 128), torch.float32)
     xg, rg = x.clone().requires_grad_(), r.clone().requires_grad_()
     out, z = fused_add_layer_norm(xg, rg, (128,), w, b, 1e-5)
@@ -141,8 +142,8 @@ def test_grad_calls_fall_back_and_match_composite() -> None:
     zc = xc + rc
     outc = F.layer_norm(zc, (128,), w, b, 1e-5)
     (outc.mean() + zc.mean()).backward()
-    torch.testing.assert_close(xg.grad, xc.grad)
-    torch.testing.assert_close(rg.grad, rc.grad)
+    torch.testing.assert_close(xg.grad, xc.grad, atol=1e-5, rtol=1e-4)
+    torch.testing.assert_close(rg.grad, rc.grad, atol=1e-5, rtol=1e-4)
 
 
 # --------------------------------------------------------------------------- #

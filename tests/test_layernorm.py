@@ -595,6 +595,14 @@ def test_wrapper_dispatches_to_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
             calls.append("layernorm_gelu")
             return _ext.layernorm_gelu(*args, **kwargs)
 
+        def layernorm_fwd_train(self, *args, **kwargs):
+            calls.append("layernorm_fwd_train")
+            return _ext.layernorm_fwd_train(*args, **kwargs)
+
+        def layernorm_bwd(self, *args, **kwargs):
+            calls.append("layernorm_bwd")
+            return _ext.layernorm_bwd(*args, **kwargs)
+
     # The fused path routes through torch.ops.fused_layernorm.* whose bodies
     # read fused_layernorm._ops._ext, so that is the seam to spy on. The
     # wrapper's own eligibility check reads layernorm._ext; patch both so an
@@ -619,10 +627,10 @@ def test_wrapper_dispatches_to_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
         mod = LayerNorm(64).to(DEVICE)
         mod(x)
         assert calls[-1] == "layernorm"
-    # grad needed -> torch
+    # grad needed -> the fwd_train kernel (real backward since v0.4.0)
     xr = x.clone().requires_grad_()
     layer_norm(xr, (64,), w, b)
-    assert len(calls) == 3
+    assert calls[-1] == "layernorm_fwd_train" and len(calls) == 4
     with torch.inference_mode():
         # mixed dtype (fp16 activations, fp32 parameters) -> torch, never the
         # kernel.  PyTorch's own CUDA LayerNorm rejects this outside autocast, so
@@ -641,10 +649,10 @@ def test_wrapper_dispatches_to_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
             layer_norm(x.half(), (64,), w, b)
             layer_norm_gelu(x, (64,), w, b)
             mod(x)
-        assert len(calls) == 3
+        assert len(calls) == 4
         # ... and the fused path is taken again once autocast is left
         layer_norm(x, (64,), w, b)
-        assert len(calls) == 4
+        assert len(calls) == 5
 
 
 @pytest.mark.cuda

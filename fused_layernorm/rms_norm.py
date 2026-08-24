@@ -43,10 +43,14 @@ def rms_norm(
     to the identical concrete value.
     """
     shape = _as_shape(normalized_shape)
-    if _eligible(input, shape, weight, ext_available=_ext is not None):
-        return torch.ops.fused_layernorm.rms_norm(
-            input, weight, _resolve_rms_eps(input.dtype, eps)
-        )
+    if _eligible(input, shape, weight, ext_available=_ext is not None, needs_grad_ok=True):
+        from ._common import _needs_grad
+
+        eps_c = _resolve_rms_eps(input.dtype, eps)
+        if _needs_grad(input, weight):
+            y, _ = torch.ops.fused_layernorm.rms_norm_fwd_train(input, weight, eps_c)
+            return y
+        return torch.ops.fused_layernorm.rms_norm(input, weight, eps_c)
     return F.rms_norm(input, shape, weight, eps)
 
 

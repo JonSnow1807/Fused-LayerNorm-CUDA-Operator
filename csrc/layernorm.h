@@ -79,3 +79,40 @@ void fused_add_layernorm_fwd_cuda_launch(const at::Tensor& input2d,
                                          at::Tensor& mean_or_undef,
                                          at::Tensor& rstd_or_undef,
                                          double eps);
+
+// Plain LayerNorm forward that also writes per-row mean/rstd (the training
+// forward). Runs the generic template in norm_fwd_ln.cu; its normalise
+// arithmetic and reduction order match layernorm_cuda_launch's kernels, so
+// the output is bitwise identical to the inference path.
+void layernorm_fwd_train_cuda_launch(const at::Tensor& input2d,
+                                     const at::Tensor& weight_or_undef,
+                                     const at::Tensor& bias_or_undef,
+                                     at::Tensor& output2d,
+                                     at::Tensor& mean2d,
+                                     at::Tensor& rstd2d,
+                                     double eps);
+
+// Backward (norm_bwd.cu). xz2d is what the forward normalised (input, or the
+// rounded sum for fused-add); mean is defined iff LayerNorm; dz_extra (when
+// defined) is the downstream cotangent of the fused-add op's new_residual
+// output, added elementwise into dx (dx = dresidual for fused-add).
+void norm_bwd_dx_cuda_launch(bool rms,
+                             const at::Tensor& dy2d,
+                             const at::Tensor& dz_extra2d_or_undef,
+                             const at::Tensor& xz2d,
+                             const at::Tensor& mean_or_undef,
+                             const at::Tensor& rstd,
+                             const at::Tensor& weight_or_undef,
+                             at::Tensor& dx2d);
+
+// Stage 1 of the deterministic two-stage parameter gradients: fixed-chunk
+// fp32 partials of shape [num_chunks, N] (dgamma_partials.size(0) chooses the
+// chunk count); stage 2 is partials.sum(0) in the bindings. No atomics: grads
+// are bitwise run-to-run reproducible.
+void norm_bwd_param_partials_cuda_launch(bool rms,
+                                         const at::Tensor& dy2d,
+                                         const at::Tensor& xz2d,
+                                         const at::Tensor& mean_or_undef,
+                                         const at::Tensor& rstd,
+                                         at::Tensor& dgamma_partials,
+                                         at::Tensor& dbeta_partials_or_undef);
