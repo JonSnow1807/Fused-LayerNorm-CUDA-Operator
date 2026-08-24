@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 — 2026‑08‑21 — from one kernel to a fused-normalisation library
+## 0.4.0 — 2026‑08‑24 — from one kernel to a fused-normalisation library
 
 ### Added
 
@@ -82,8 +82,20 @@
 
 ### Measured
 
-* _Completed in the release data commit (benchmarks run from a clean clone of
-  the release code commit; see `benchmarks/results/`)._
+Committed under `benchmarks/results/2026-08-24_a100-40gb_v040_ops/` (fp16 and
+fp32, produced from a clean clone of release code commit `5fdb217`,
+`git_dirty=false`; 257 tests passed in the same clone first). Kernel-time
+ratios over six shapes (512×1024 … 4096×8192), fp16: `fused_add_rms_norm`
+1.22–1.58× vs the eager composite (0.95–0.99× vs the `torch.compile`d
+composite at M ≥ 2048, and faster than both on wall clock everywhere);
+`fused_add_layer_norm` 1.00–1.49× vs eager; `rms_norm` 0.99–1.27× vs aten's
+fused `F.rms_norm` kernel; the fp8 ops 5.6–8.6× vs the eager
+norm→amax→cast chain and **1.44–1.81× vs the compiled chain at M ≥ 2048** —
+the one outright win over Inductor. Deliberately published weak spots: at
+512×1024 Inductor's kernels beat ours on pure kernel time, and a full
+training step (fwd+bwd) measures 0.44–1.10× of PyTorch's autograd — the
+backward is correctness-first; speed there is future work. fp32 ranges are in
+the same directory's README.
 
 ## 0.3.0 — 2026‑08‑20 — first hardware run + vectorised kernel
 

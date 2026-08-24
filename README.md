@@ -121,11 +121,50 @@ clean clone of the release commit. Competitors include the same composite
 under `torch.compile(fullgraph=True)` — beating only eager would be a
 strawman.
 
-### v0.4.0 measurements
+### 2026‑08‑24, A100‑SXM4‑40GB: the v0.4.0 op family
 
-_This section is filled by the release data commit (the run happens from a
-clean clone of the release code commit so the JSON provenance is exact); see
-[`benchmarks/results/`](benchmarks/results/)._
+[`benchmarks/results/2026-08-24_a100-40gb_v040_ops/`](benchmarks/results/2026-08-24_a100-40gb_v040_ops/)
+(fp16 + fp32 files; produced from a clean clone of the release code commit
+`5fdb217`, `git_dirty=false`, full details and honest-reading notes in that
+directory's README). Kernel-time ratios, ours vs competitor, over shapes from
+512×1024 to 4096×8192:
+
+| op (fp16) | vs eager composite | vs `torch.compile`'d composite |
+|---|---|---|
+| `fused_add_rms_norm` | **1.22–1.58×** | 0.95–0.99× at M ≥ 2048 (0.80× at 512×1024) |
+| `fused_add_layer_norm` | 1.00–1.49× | 0.88–1.00× at M ≥ 2048 |
+| `rms_norm` (vs aten's fused `F.rms_norm`) | 0.99–1.27× | 0.76–1.25× |
+| `rms_norm_fp8` dynamic | **5.6–8.6×** | **1.54–1.81× at M ≥ 2048** |
+| `fused_add_rms_norm_fp8` dynamic | **5.7–6.9×** | **1.44–1.77× at M ≥ 2048** |
+| training step fwd+bwd (LN / RMS) | 0.44–1.04× / 0.55–1.10× | — |
+
+How to read it honestly:
+
+* **The fused-add ops deliver what they promise in eager mode** — 1.2–1.6×
+  kernel time over the eager composite at 62–85 % of datasheet bandwidth —
+  and are at kernel parity with Inductor's fused codegen at production
+  shapes. On **wall clock** they beat both everywhere measured: the compiled
+  composite pays ~90 µs of guard/dispatch per eager call (e.g. 4096×8192
+  fp16: ours 207 µs, eager composite 302 µs, compiled 207 µs; 2048×4096:
+  ours 54 µs, eager 67 µs, compiled 94 µs).
+* **The norm→fp8 fusion is the headline**: 5.6–8.6× over the eager
+  norm→amax→cast chain, and the one place this library beats
+  `torch.compile`'s fused kernel outright (1.44–1.81× at M ≥ 2048) — Inductor
+  fuses the chain but still materialises intermediates the kernel keeps in
+  registers/L1.
+* Plain `rms_norm` competes with aten's own fused kernel and still comes out
+  ahead at most shapes (up to 1.27×, ~94 % of peak at 4096×4096) — but
+  near-parity, not headlines, is the honest framing there.
+* **The published weak spots**: at 512×1024 Inductor's small-shape kernels
+  beat ours on pure kernel time (0.48–0.84× depending on op — while losing
+  4–9× on wall clock); and a full training step measures **0.44–1.10× of
+  PyTorch's autograd** — the backward kernels are correctness-first (scalar
+  loads, deterministic no-atomics parameter grads, gradcheck-verified).
+  Training through these ops is correct and bitwise reproducible; making it
+  fast is future work.
+* A few JSON rows show >100 % of datasheet bandwidth: the per-op bytes model
+  counts the normalise pass's re-read, which largely hits L2 — modelled GB/s
+  overstates DRAM traffic there; candidate *ratios* are unaffected.
 
 ### 2026‑08‑20, A100‑SXM4‑40GB: LayerNorm kernel time (v0.3.0)
 
