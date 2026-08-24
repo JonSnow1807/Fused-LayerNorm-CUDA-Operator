@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.4.1 — 2026‑08‑24 — post-release integrity audit fixes
+
+An adversarial audit of the pushed v0.4.0 (claims-vs-data, kernel review,
+Python review, hygiene, benchmark-methodology review) plus the first real CI
+runs produced this patch release. In the spirit of this repository's ledger,
+the defects are listed rather than paraphrased away.
+
+### The v0.4.0 tag itself was defective
+
+* `import fused_layernorm` **failed on torch 2.4** — the declared minimum —
+  because `torch.library`'s schema inference there cannot resolve the string
+  annotations produced by `from __future__ import annotations` (and, once
+  fixed, also rejects string *default values*: `approximate` is now
+  `Optional[str] = None`, mapped to `"none"` in the op body). Both were
+  caught by the torch-2.4 CI leg on the first real Actions run.
+* The CUDA CI job referenced a nonexistent container image
+  (`pytorch/pytorch:2.13.0-cuda12.9-cudnn9-devel`); it now uses the real
+  `2.13.0-cuda12.6-cudnn9-devel` tag. CI is green (both torch legs + the
+  sm80/sm90 compile job) as of this release.
+* The stale `v2.0.0` tag — which served the pre-rewrite README with the
+  claims the 0.2.0 audit retracted — has been deleted from the remote.
+
+### Claims corrected against the release's own data
+
+* "On wall clock they beat both everywhere measured" was **false**: the
+  compiled composite wins fp32's largest shape by ~15 % (0.85–0.87× at
+  4096×8192) and ties fp16's two largest. README/CHANGELOG now state exactly
+  that.
+* The >100 %-of-peak bandwidth rows were explained by a wrong mechanism (a
+  "re-read" the bytes models do not contain); the real cause is inter-call
+  L2 residency of 8–34 MB working sets across the 200 timed calls.
+* Range fixes: the "4–20×" and "4–9×" wall-clock advantages are the measured
+  4.5–11.2×; the fused-add kernel/bandwidth ranges are stated per op instead
+  of blurring the RMS and LayerNorm variants together.
+
+### Code fixes
+
+* Removed `__restrict__` from the fused-add kernels' residual pointer pair —
+  the in-place variant aliases them, and promising no-alias there was UB
+  (benign under current codegen, still wrong).
+* fp8: NaN inputs now quantise to NaN (fmin/fmax silently dropped the NaN
+  and produced −448); `scale_ub` must be positive (the kernel treats ≤ 0 as
+  "no clamp", the eager fallback clamped to zero — the divergence is now
+  rejected at the API).
+* Empty-shape semantics: zero-size inputs return zeroed statistics/scales
+  instead of uninitialised memory, and an empty-batch backward returns
+  zeros(N) parameter grads instead of "no grad".
+* `_eligible` gained the kernel dtype whitelist, so unsupported dtypes
+  (complex, integer) take the PyTorch fallback instead of the extension's
+  error path; the fp8 grad-guard now also covers a grad-requiring `scale`.
+* Benchmark fairness: the eager fp8 composite no longer computes `y.float()`
+  twice (that handicapped the competitor — fp8 claims are re-measured in
+  this release's data), the fp8 correctness gate checks the scale
+  independently, and the backward rows are labelled as full fwd+bwd
+  training-step numbers, which is what they time.
+* A sweep of stale pre-v0.4.0 prose (forward-only claims in module
+  docstrings, bindings header, examples, methodology notes, benchmark READMEs,
+  test names, pyproject description/keywords).
+
+### Measured
+
+Re-measured from a clean clone of this release's code commit (the fairness
+fix above changes the fp8 competitor): see
+`benchmarks/results/` — the v0.4.1 directory README carries the updated
+numbers and provenance. (Filled by the release data commit.)
+
 ## 0.4.0 — 2026‑08‑24 — from one kernel to a fused-normalisation library
 
 ### Added
@@ -87,7 +153,9 @@ fp32, produced from a clean clone of release code commit `5fdb217`,
 `git_dirty=false`; 257 tests passed in the same clone first). Kernel-time
 ratios over six shapes (512×1024 … 4096×8192), fp16: `fused_add_rms_norm`
 1.22–1.58× vs the eager composite (0.95–0.99× vs the `torch.compile`d
-composite at M ≥ 2048, and faster than both on wall clock everywhere);
+composite at M ≥ 2048; on wall clock faster than the eager composite
+everywhere and than the compiled one at all but the two largest fp16 shapes,
+which tie — in fp32 the compiled composite wins the largest shape by ~15 %);
 `fused_add_layer_norm` 1.00–1.49× vs eager; `rms_norm` 0.99–1.27× vs aten's
 fused `F.rms_norm` kernel; the fp8 ops 5.6–8.6× vs the eager
 norm→amax→cast chain and **1.44–1.81× vs the compiled chain at M ≥ 2048** —

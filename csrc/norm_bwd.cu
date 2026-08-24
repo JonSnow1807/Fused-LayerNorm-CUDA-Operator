@@ -19,7 +19,7 @@
 // dgamma/dbeta (two-stage, DETERMINISTIC - no atomics):
 //   Stage 1 (here): grid (ceil(N/32), num_chunks), 32x32 blocks. Each block
 //   owns a 32-column slice and a fixed chunk of rows; per-thread fp32
-//   accumulation over its rows, shared-memory transpose reduce, one write of
+//   accumulation over its rows, a shared-memory tree reduce over the row axis, one write of
 //   partials[chunk, col]:  dgamma_p = sum(dy * xhat), dbeta_p = sum(dy).
 //   Stage 2 (bindings): partials.sum(0).to(param dtype) - a fixed-shape aten
 //   reduction, so parameter grads are bitwise run-to-run reproducible.

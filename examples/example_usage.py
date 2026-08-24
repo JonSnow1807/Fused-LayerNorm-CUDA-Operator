@@ -3,8 +3,9 @@
 Shows the three entry points -- the ``F.layer_norm``-shaped function, the fused
 LayerNorm+GELU function, and ``replace_layernorm`` on a stock
 ``nn.TransformerEncoderLayer`` -- and checks each against plain PyTorch with
-``torch.testing.assert_close``.  Everything is forward-only (the kernel has no
-backward pass), so the module demo runs under ``torch.inference_mode()``.
+``torch.testing.assert_close``.  This example sticks to inference, so the
+module demo runs under ``torch.inference_mode()`` (since v0.4.0 training
+through the fused ops works too - see the README).
 
 Requires the compiled ``fused_layernorm_cuda`` extension and a CUDA device;
 otherwise it prints a message and exits 0.  Run with ``python examples/example_usage.py``.

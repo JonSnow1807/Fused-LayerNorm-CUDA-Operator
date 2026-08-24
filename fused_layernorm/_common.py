@@ -77,6 +77,10 @@ def _eligible(
     return (
         ext_available
         and input.is_cuda
+        # The kernels dispatch exactly these dtypes; anything else (complex,
+        # integer, fp8 inputs) must take the PyTorch fallback rather than the
+        # extension's error path.
+        and input.dtype in (torch.float32, torch.float64, torch.float16, torch.bfloat16)
         and input.dim() >= 1
         and len(normalized_shape) == 1
         and normalized_shape[-1] == input.shape[-1]

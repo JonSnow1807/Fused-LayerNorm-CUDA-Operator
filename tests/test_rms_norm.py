@@ -113,14 +113,14 @@ def test_eps_none_matches_torch_machine_eps_semantics() -> None:
 
 @pytest.mark.cuda
 @requires_cuda_ext
-def test_forward_only_and_grad_fallback() -> None:
+def test_inference_no_gradfn_and_training_grads() -> None:
     x = _randn((8, 128), torch.float32)
     w, _ = _affine(128, torch.float32)
     with torch.no_grad():
         assert rms_norm(x, (128,), w, 1e-6).grad_fn is None
     xg = x.clone().requires_grad_()
     wg = w.clone().requires_grad_()
-    y = rms_norm(xg, (128,), wg, 1e-6)  # falls back to torch: grads work
+    y = rms_norm(xg, (128,), wg, 1e-6)  # fused fwd-train path: grads work
     assert y.grad_fn is not None
     y.sum().backward()
     assert xg.grad is not None and wg.grad is not None

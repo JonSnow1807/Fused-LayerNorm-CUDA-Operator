@@ -42,8 +42,11 @@ namespace fused_norm {
 // ---------------------------------------------------------------------------
 template <typename scalar_t, typename acc_t, bool kRMS, bool kFusedAdd, typename Epi>
 __global__ void norm_fwd_kernel(const scalar_t* __restrict__ input,
-                                const scalar_t* __restrict__ residual_in,   // null unless kFusedAdd
-                                scalar_t* __restrict__ residual_out,        // null unless kFusedAdd
+                                // No __restrict__ on the residual pair: residual_out may alias
+                                // residual_in (the in-place variant), and promising no-alias
+                                // there would be UB.
+                                const scalar_t* residual_in,   // null unless kFusedAdd
+                                scalar_t* residual_out,        // null unless kFusedAdd
                                 typename Epi::out_t* __restrict__ output,
                                 const scalar_t* __restrict__ gamma,         // null ok
                                 const scalar_t* __restrict__ beta,          // null ok; null if kRMS
@@ -165,8 +168,8 @@ __global__ void norm_fwd_kernel(const scalar_t* __restrict__ input,
 // ---------------------------------------------------------------------------
 template <typename scalar_t, typename acc_t, bool kRMS, bool kFusedAdd, typename Epi>
 __global__ void norm_fwd_vec_kernel(const scalar_t* __restrict__ input,
-                                    const scalar_t* __restrict__ residual_in,
-                                    scalar_t* __restrict__ residual_out,
+                                    const scalar_t* residual_in,   // aliasable pair: see above
+                                    scalar_t* residual_out,
                                     typename Epi::out_t* __restrict__ output,
                                     const scalar_t* __restrict__ gamma,
                                     const scalar_t* __restrict__ beta,

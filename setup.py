@@ -1,7 +1,9 @@
 """Build script for the ``fused_layernorm`` package and its CUDA extension.
 
-Builds one extension module, ``fused_layernorm_cuda``, from ``csrc/bindings.cpp`` and
-``csrc/layernorm_cuda_kernel.cu``, plus the pure-Python package ``fused_layernorm``.
+Builds one extension module, ``fused_layernorm_cuda``, from the five sources
+listed below (bindings, the v0.3.0 LayerNorm kernels, the generic
+forward TUs and the backward TU), plus the pure-Python package
+``fused_layernorm``.
 
 Requires a CUDA toolkit (``nvcc``) and a CUDA-enabled PyTorch at build time. Static
 project metadata lives in ``pyproject.toml``; the values repeated here mirror it so the

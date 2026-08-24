@@ -149,15 +149,18 @@ So when you profile `F.layer_norm` you should expect to see
 
 LayerNorm does only a handful of flops per element read/written (O(N) work
 for a row of N elements), so at large row counts it is memory-bound. The only large-row timings in the repository are
-for the *July 2025* kernel and PyTorch
+for the *July 2025* kernel and PyTorch (v0.3.0+ added committed
+kernel-time data for the current kernels; see `benchmarks/results/`)
 ([`../benchmarks/results/historical_2025-07_deleted_kernel/large_model_results.csv`](../benchmarks/results/historical_2025-07_deleted_kernel/large_model_results.csv), see that folder's README for provenance caveats):
 PyTorch took 0.056–0.375 ms for 4096 rows x 1600–12288 columns, which — if
 those runs were fp32 (the dtype is not recorded) — is roughly 1 TB/s of
 read+write traffic on an A100-SXM4-80GB, i.e. about half of the 2039 GB/s
 peak. In that regime a simple block-per-row kernel that reads each row three
 times (mean pass, variance pass, normalise pass; PyTorch's vectorised kernel
-reads it twice) with scalar loads is — as an unmeasured expectation, not a
-result — unlikely to beat PyTorch and may be slower. This is **unmeasured** for
+reads it twice) with scalar loads is — as was then an unmeasured expectation —
+unlikely to beat PyTorch and may be slower. (The v0.3.0 scalar-baseline run
+later confirmed exactly this: 0.42–0.98× at every M ≥ 512 shape.) At the time
+of the 0.2.0 rewrite this was **unmeasured** for
 the current kernel: `bench_layernorm.py` includes 2048x4096, 4096x4096,
 8192x1024, 16384x768 and 4096x12288 in its default grid precisely so that this
 regime gets measured and committed.

@@ -47,7 +47,7 @@ from . import _ops  # noqa: E402,F401
 # Single source of truth for the version: setup.py regex-reads this line and
 # injects it into the extension as -DFUSED_LN_VERSION; pyproject.toml reads it
 # via [tool.setuptools.dynamic].
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __all__ = [
     "FusedAddLayerNorm",

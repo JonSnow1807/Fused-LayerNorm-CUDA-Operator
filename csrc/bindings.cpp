@@ -4,12 +4,17 @@
 // input to a contiguous 2-D (rows, N) view, allocating the output, calling the launcher
 // declared in layernorm.h, and reshaping the result back to the input's shape.
 //
-// Exposed module (name comes from TORCH_EXTENSION_NAME, i.e. "fused_layernorm_cuda"):
-//   layernorm(input, weight=None, bias=None, eps=1e-5) -> Tensor
-//   layernorm_gelu(input, weight=None, bias=None, eps=1e-5, approximate="none") -> Tensor
-//   __version__ == the package version (injected by setup.py at build time)
+// Exposed module (name comes from TORCH_EXTENSION_NAME, i.e.
+// "fused_layernorm_cuda"): the LayerNorm/RMSNorm inference entry points, the
+// fused residual-add pair, the fp8 quantised-output variants, the *_fwd_train
+// forwards (which also return the per-row statistics) and the *_bwd backward
+// entry points, plus __version__ (injected by setup.py at build time). See
+// the m.def docstrings at the bottom for each signature.
 //
-// Both functions are FORWARD ONLY: the returned tensor has no grad_fn.
+// Autograd note: nothing HERE builds an autograd graph - tensors returned by
+// these raw entry points never carry grad_fn. Differentiability is wired one
+// layer up, in fused_layernorm/_ops.py via torch.library.register_autograd
+// over the *_fwd_train/*_bwd pairs.
 
 #include <torch/extension.h>
 
@@ -152,8 +157,8 @@ std::tuple<at::Tensor, at::Tensor> fused_add_impl(const at::Tensor& input,
 
   if (input.numel() == 0) {
     at::Tensor z = inplace ? residual : at::empty_like(input);
-    if (mean_out != nullptr) *mean_out = at::empty(leading, acc);
-    if (rstd_out != nullptr) *rstd_out = at::empty(leading, acc);
+    if (mean_out != nullptr) *mean_out = at::zeros(leading, acc);
+    if (rstd_out != nullptr) *rstd_out = at::zeros(leading, acc);
     return {at::empty_like(input), z};
   }
   const int64_t M = input.numel() / N;
@@ -225,8 +230,9 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> layernorm_fwd_train(
 
   const auto acc = input.options().dtype(acc_dtype_for(st));
   if (input.numel() == 0) {
-    return {at::empty_like(input), at::empty(leading_sizes(input), acc),
-            at::empty(leading_sizes(input), acc)};
+    // zeros: an (M, 0) input has M real (if degenerate) stats slots.
+    return {at::empty_like(input), at::zeros(leading_sizes(input), acc),
+            at::zeros(leading_sizes(input), acc)};
   }
   const int64_t M = input.numel() / N;
   const at::Tensor x2d = input.contiguous().view({M, N});
@@ -251,7 +257,7 @@ std::tuple<at::Tensor, at::Tensor> rmsnorm_fwd_train(const at::Tensor& input,
 
   const auto acc = input.options().dtype(acc_dtype_for(st));
   if (input.numel() == 0) {
-    return {at::empty_like(input), at::empty(leading_sizes(input), acc)};
+    return {at::empty_like(input), at::zeros(leading_sizes(input), acc)};
   }
   const int64_t M = input.numel() / N;
   const at::Tensor x2d = input.contiguous().view({M, N});
@@ -325,6 +331,11 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> layernorm_bwd(
 
   at::Tensor dgamma = at::empty({0}, xz.options());
   at::Tensor dbeta = at::empty({0}, xz.options());
+  if ((need_dgamma || need_dbeta) && M == 0 && N > 0) {
+    // Empty batch: the correct parameter grad is zeros, not "no grad".
+    if (need_dgamma) dgamma = at::zeros({N}, xz.options());
+    if (need_dbeta) dbeta = at::zeros({N}, xz.options());
+  }
   if ((need_dgamma || need_dbeta) && M > 0) {
     const int64_t sms = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
     const int64_t chunks = std::clamp<int64_t>((M + 255) / 256, 1, 4 * sms);
@@ -364,6 +375,9 @@ std::tuple<at::Tensor, at::Tensor> rmsnorm_bwd(const at::Tensor& dy,
   }
 
   at::Tensor dgamma = at::empty({0}, xz.options());
+  if (need_dgamma && M == 0 && N > 0) {
+    dgamma = at::zeros({N}, xz.options());
+  }
   if (need_dgamma && M > 0) {
     const int64_t sms = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
     const int64_t chunks = std::clamp<int64_t>((M + 255) / 256, 1, 4 * sms);
@@ -425,7 +439,9 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rmsnorm_fp8_impl(
 
   if (input.numel() == 0) {
     at::Tensor z = fused_add ? (inplace ? res : at::empty_like(input)) : at::Tensor();
-    at::Tensor s = dynamic ? at::empty(scale_shape, f32_opts) : at::Tensor();
+    // zeros, not empty: an (M, 0) input has M real scale slots that would
+    // otherwise be returned as uninitialised device memory.
+    at::Tensor s = dynamic ? at::zeros(scale_shape, f32_opts) : at::Tensor();
     return {at::empty(input.sizes(), out_opts), z, s};
   }
   const int64_t M = input.numel() / N;
@@ -549,7 +565,10 @@ at::Tensor layernorm_gelu(const at::Tensor& input,
 }  // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.doc() = "Fused LayerNorm (+GELU) forward CUDA kernel. Forward only: no autograd.";
+  m.doc() =
+      "fused_layernorm CUDA kernels (LayerNorm/RMSNorm, fused residual-add, fp8, "
+      "backward). Raw entry points: no autograd graph here - fused_layernorm/_ops.py "
+      "wires differentiability over the *_fwd_train/*_bwd pairs.";
 
   m.def("layernorm", &layernorm,
         "LayerNorm over the last dimension of a CUDA tensor.\n\n"

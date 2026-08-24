@@ -545,7 +545,7 @@ def test_kernel_deterministic() -> None:  # (8)
 @pytest.mark.cuda
 @requires_cuda_ext
 def test_kernel_has_no_grad_fn() -> None:  # (9)
-    """The extension is forward-only: its output never carries a grad_fn."""
+    """The raw extension entry points never build autograd graphs themselves."""
     x = _randn((4, 64), torch.float32).requires_grad_()
     w, b = _affine(64, torch.float32)
     w.requires_grad_()
@@ -558,7 +558,7 @@ def test_kernel_has_no_grad_fn() -> None:  # (9)
 
 @pytest.mark.cuda
 @requires_cuda_ext
-def test_wrapper_falls_back_to_torch_when_grad_needed() -> None:  # (9)
+def test_wrapper_grad_calls_use_fused_backward() -> None:  # (9)
     x = _randn((4, 64), torch.float32).requires_grad_()
     w, b = _affine(64, torch.float32)
     w.requires_grad_()

@@ -1,19 +1,19 @@
 """Python front end for the ``fused_layernorm_cuda`` extension.
 
-This module wraps the forward-only CUDA kernel exposed by the extension
-(``fused_layernorm_cuda.layernorm`` / ``fused_layernorm_cuda.layernorm_gelu``)
-behind ``F.layer_norm``-shaped functions and an ``nn.LayerNorm`` subclass.
+This module wraps the LayerNorm CUDA kernels behind ``F.layer_norm``-shaped
+functions and an ``nn.LayerNorm`` subclass. Since v0.4.0 the fused path also
+serves gradient-requiring calls (fwd-train kernel + registered CUDA
+backward); ``layer_norm_gelu`` remains the one forward-only entry point.
 
 Design rules (see docstrings below for details):
 
 * The extension is imported lazily and optionally.  This module imports fine on
   a machine without CUDA or without the compiled extension; every entry point
   then falls back to plain PyTorch.
-* The kernel is forward-only and returns a tensor with no ``grad_fn``.  Whenever
-  autograd would need to record the op (grad mode on and some input requires
-  grad) we call ``torch.nn.functional.layer_norm`` instead, so training code
-  keeps correct gradients.  Silently breaking autograd would be a correctness
-  bug, not an optimisation.
+* Gradient-requiring calls run the fused fwd-train kernel with a registered
+  CUDA backward (v0.4.0+); inference calls take the raw extension fast path.
+  ``layer_norm_gelu`` is still forward-only and falls back to PyTorch under
+  autograd — silently breaking autograd would be a correctness bug.
 * Only the last dimension is normalised by the kernel, i.e. only a 1-D
   ``normalized_shape`` equal to ``input.shape[-1]`` is eligible for the fused
   path.  Every other case (multi-dim ``normalized_shape``, CPU tensors, ...) is
@@ -106,13 +106,13 @@ def layer_norm(
 ) -> torch.Tensor:
     """Layer normalisation with the same signature as ``F.layer_norm``.
 
-    The fused CUDA kernel is used iff the extension is available, ``input`` is
-    on a CUDA device, ``normalized_shape`` is one-dimensional and equal to
-    ``input.shape[-1]``, ``weight``/``bias`` (if given) have the same dtype
-    and device as ``input``, no CUDA autocast region is active, and autograd
-    does not need to record the op (``torch.is_grad_enabled()`` is False or
-    none of ``input``/``weight``/``bias`` requires grad).  In every other case
-    this is exactly ``torch.nn.functional.layer_norm``.
+    The fused CUDA kernels are used iff the extension is available, ``input``
+    is a CUDA tensor of a supported dtype, ``normalized_shape`` is
+    one-dimensional and equal to ``input.shape[-1]``, ``weight``/``bias`` (if
+    given) have the same dtype and device as ``input``, and no CUDA autocast
+    region is active.  Gradient-requiring eligible calls run the fwd-train
+    kernel (bitwise-identical output) with a real CUDA backward; every
+    ineligible call is exactly ``torch.nn.functional.layer_norm``.
 
     Since v0.4.0 calls that require gradients run the fused fwd-train kernel
     (bitwise-identical output) with a registered CUDA backward, so training

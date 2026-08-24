@@ -35,10 +35,14 @@ _FP8_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
 
 def _check_quant_call(input: torch.Tensor, *tensors, scale, scale_ub) -> None:
-    if _needs_grad(input, *tensors):
+    if _needs_grad(input, *tensors, scale):
         raise RuntimeError("fp8 norm ops are inference-only; detach or use no_grad()")
     if scale is not None and scale_ub is not None:
         raise ValueError("scale_ub applies to dynamic scaling only (scale=None)")
+    if scale_ub is not None and scale_ub <= 0:
+        # The kernel treats <= 0 as "no clamp"; rejecting it here keeps the
+        # eager fallback and the kernel path identical.
+        raise ValueError(f"scale_ub must be positive, got {scale_ub}")
     if input.dtype not in _FP8_DTYPES:
         raise ValueError(f"fp8 ops support float32/float16/bfloat16 inputs, got {input.dtype}")
 

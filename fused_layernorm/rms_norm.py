@@ -1,10 +1,11 @@
 """RMSNorm: an ``F.rms_norm``-shaped function and an ``nn.RMSNorm`` drop-in.
 
-Same design rules as ``layernorm.py``: the CUDA kernel is used only when it
-cannot change behaviour (CUDA input, 1-D ``normalized_shape`` equal to the
-last dimension, matching weight dtype/device, no autocast, no gradient needed
-— the kernel entry point is forward-only until the backward phase lands);
-every other call is exactly ``torch.nn.functional.rms_norm``.
+Same design rules as ``layernorm.py``: the CUDA kernels are used only when
+they cannot change behaviour (CUDA input of a supported dtype, 1-D
+``normalized_shape`` equal to the last dimension, matching weight
+dtype/device, no autocast). Gradient-requiring eligible calls run the
+fwd-train kernel with a registered CUDA backward; every other call is exactly
+``torch.nn.functional.rms_norm``.
 
 The one subtlety worth knowing: ``F.rms_norm``'s default ``eps=None`` does NOT
 mean 1e-5 or 1e-6 — PyTorch substitutes the machine epsilon of the

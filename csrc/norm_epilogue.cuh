@@ -44,7 +44,11 @@ struct EpiNone {
 // not assumed, in the benchmarks.
 
 __device__ __forceinline__ __nv_fp8_e4m3 to_fp8_e4m3(float v, float inv_scale) {
-  const float q = fminf(fmaxf(v * inv_scale, -448.f), 448.f);
+  // fminf/fmaxf DROP a NaN operand, which would silently quantise NaN inputs
+  // to -448; pass NaN through instead (SATFINITE keeps it NaN in e4m3fn),
+  // matching torch's .to(float8_e4m3fn) semantics and the composite fallback.
+  const float p = v * inv_scale;
+  const float q = isnan(p) ? p : fminf(fmaxf(p, -448.f), 448.f);
   // __nv_cvt_float_to_fp8 returns the raw STORAGE byte; assign it to __x
   // directly. The __nv_fp8_e4m3(unsigned char) constructor would instead
   // numerically convert the byte's value - a silent corruption caught by the

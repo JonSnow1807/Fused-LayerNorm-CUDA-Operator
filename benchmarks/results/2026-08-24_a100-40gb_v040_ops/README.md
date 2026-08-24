@@ -22,15 +22,19 @@ plain `rms_norm` aten's own fused kernel via `F.rms_norm`. The
 
 Notes for reading the JSONs honestly:
 
-* Each op's `bytes_model` is recorded per row. A few entries exceed 100 % of
-  the 1 555 GB/s datasheet peak (e.g. plain `rms_norm` fp16 at 2048×4096):
-  the model counts the normalise pass's re-read of the row as DRAM traffic,
-  but it largely hits L2, so modelled GB/s overstates DRAM bandwidth there.
-  Ratios between candidates are unaffected (same model both sides).
+* Each op's `bytes_model` is recorded per row and counts each tensor exactly
+  once. A few entries exceed 100 % of the 1 555 GB/s datasheet peak (e.g.
+  plain `rms_norm` fp16 at 2048×4096, and compiled candidates at the same
+  shapes): at those shapes the working set (8–34 MB) fits the A100's 40 MB
+  L2 and stays resident across the 200 timed calls, so much of the modelled
+  traffic never reaches DRAM. Ratios between candidates are unaffected
+  (same model both sides).
 * The wall-clock (`eager_us`) columns are part of the story: the compiled
   composite's kernels are excellent, but each call pays ~90 µs of
-  guard/dispatch latency at small-to-mid shapes, where these ops' wall-clock
-  is 4–20× lower.
+  guard/dispatch latency — at 512×1024 fp16 that is 4.5–11.2× more wall
+  clock than these ops, depending on the op. The advantage flips at the
+  largest fp32 shape, where the compiled composite wins on wall clock too
+  (0.85–0.87× at 4096×8192).
 
 Summary (kernel time, ours vs competitor; ranges over the six shapes):
 

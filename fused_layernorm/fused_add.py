@@ -14,10 +14,10 @@ indistinguishable from the unfused composite).  Returns
 
 ``inplace=True`` (inference-only) writes the sum into ``residual``'s storage
 instead of allocating: the returned ``new_residual`` *is* ``residual``, and
-the pre-call values are gone.  Calls that require gradients raise — use the
-default out-of-place form under autograd (its backward lands with the
-training phase; until then autograd-requiring calls fall back to the eager
-composite, which is numerically identical).
+the pre-call values are gone.  Calls that require gradients raise for the
+inplace form — the default out-of-place form is fully differentiable
+(fwd-train kernel + registered CUDA backward, with gradients flowing through
+BOTH outputs).
 """
 
 from __future__ import annotations

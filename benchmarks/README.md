@@ -1,16 +1,21 @@
 # Benchmarks
 
-This directory contains one benchmark script (`bench_layernorm.py`), the
-legacy scripts that produced the numbers in the old README (`legacy/`, kept
-byte-identical for provenance), and committed result files (`results/`).
+This directory contains two benchmark scripts — `bench_layernorm.py` (the
+plain-LayerNorm benchmark whose committed v0.3.0 data it produced) and
+`bench_norms.py` (the v0.4.0 op family: RMSNorm, fused residual-add, fp8,
+training step; built on the same timing core) — the legacy scripts that
+produced the numbers in the old README (`legacy/`, kept byte-identical for
+provenance), and committed result files (`results/`).
 
 ## Status of the numbers in this repository (read this first)
 
 * **Kernel-time, CUDA-graph and bandwidth measurements exist since 2026‑08‑20:**
   [`results/2026-08-20_a100-40gb_kernel_time/`](results/2026-08-20_a100-40gb_kernel_time/README.md)
   holds `bench_layernorm.py` output (fp32 and fp16, plus a scalar-kernel
-  baseline run) for the v0.3.0 kernels on an A100‑SXM4‑40GB; its README states
-  the commands, commit and environment. These are the only numbers that speak
+  baseline run) for the v0.3.0 kernels on an A100‑SXM4‑40GB, and
+  [`results/2026-08-24_a100-40gb_v040_ops/`](results/2026-08-24_a100-40gb_v040_ops/README.md)
+  holds `bench_norms.py` output for the v0.4.0 op family; each README states
+  the commands, commit and environment. Only these profiler-based files speak
   about kernel speed.
 * The eager per-call latencies in
   [`results/2025-08-17_a100_eager_latency/`](results/2025-08-17_a100_eager_latency/README.md)
@@ -31,7 +36,9 @@ Requirements: a CUDA GPU, a CUDA build of `torch`, and the extension built
 `torch` and the Python standard library.
 
 ```bash
-python benchmarks/bench_layernorm.py                       # default shape grid, float32
+python benchmarks/bench_norms.py                           # v0.4.0 op family, fp16, all ops
+python benchmarks/bench_norms.py --op fused_add_rms_norm --dtype float32
+python benchmarks/bench_layernorm.py                       # plain LayerNorm, default grid, float32
 python benchmarks/bench_layernorm.py --dtype float16
 python benchmarks/bench_layernorm.py --shapes 32x768,4096x4096 --iters 500 --reps 30
 python benchmarks/bench_layernorm.py --no-graphs           # skip CUDA-graph capture

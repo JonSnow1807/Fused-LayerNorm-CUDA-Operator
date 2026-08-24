@@ -51,7 +51,8 @@ Outputs: a JSON file and a Markdown table in ``--out`` (default
 ``benchmarks/out/``, which is git-ignored).  Nothing in this file contains a
 measured number; all numbers come from running it.
 
-Limitations: forward pass only (the extension has no backward); one GPU;
+Limitations: this script benchmarks the plain-LayerNorm forward only (the
+v0.4.0 op family, including backward, is covered by bench_norms.py); one GPU;
 timings depend on GPU clocks, driver, and host CPU - always commit the JSON
 together with the environment metadata it contains.
 """

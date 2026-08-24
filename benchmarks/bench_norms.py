@@ -17,8 +17,10 @@ The competitors are deliberately the strongest available:
     fused ``_fused_rms_norm`` kernel — near-parity is the expected, honest
     outcome there.
 
-Backward rows time ``torch.autograd.grad`` end to end (kernel-time sum over
-all backward kernels), ours vs the composite's autograd.
+The backward rows time a full FORWARD + BACKWARD step per call
+(``torch.autograd.grad`` with the forward inside the thunk), ours vs the
+composite - label them as training-step numbers, not isolated backward
+kernel time.
 
 Per-op ``bytes_moved`` models differ (a fused-add moves ~2x a plain norm), so
 GB/s — not raw microseconds — is the honest cross-op metric; each model is
@@ -138,6 +140,10 @@ def _fused_add_candidates(rms: bool):
         import fused_layernorm
 
         x, r, w, b, n = i["x"], i["r"], i["w"], i["b"], i["n"]
+        # The inplace candidate mutates this buffer every call (r += x
+        # repeatedly). Reallocating or restoring it inside the thunk would
+        # charge the inplace op for work the others do not do, so the drift
+        # is accepted; the values it produces are never checked for accuracy.
         r_inplace = r.clone()
 
         if rms:
@@ -195,8 +201,9 @@ def _fp8_dynamic_candidates(i):
 
     def composite():
         y = F.rms_norm(x, (n,), w, 1e-6)
-        s = (y.float().abs().amax(-1, keepdim=True).clamp(min=1e-12)) / 448.0
-        q = (y.float() * (1.0 / s)).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)
+        yf = y.float()  # hoisted: computing it twice would handicap the competitor
+        s = (yf.abs().amax(-1, keepdim=True).clamp(min=1e-12)) / 448.0
+        q = (yf * (1.0 / s)).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)
         return q, s
 
     comp_c = _compiled(composite)
@@ -215,6 +222,11 @@ def _fp8_dynamic_check(i):
     x, w, n = i["x"], i["w"], i["n"]
     out, s = fused_layernorm.rms_norm_fp8(x, (n,), w, 1e-6)
     y = fused_layernorm.rms_norm(x, (n,), w, 1e-6)
+    # Independent scale check first (quantising with the kernel's own scale
+    # alone would let a wrong-but-consistent scale pass). Relative bound: the
+    # kernel's fp32 amax/448 and this one can differ by an ulp.
+    s_ref = y.float().abs().amax(-1, keepdim=True).clamp(min=1e-12) / 448.0
+    assert ((s - s_ref).abs() <= s_ref * 1e-6 + 1e-12).all()
     q = (y.float() * (1.0 / s)).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)
     assert torch.equal(out.view(torch.uint8), q.view(torch.uint8))
 
@@ -227,8 +239,9 @@ def _fused_add_fp8_candidates(i):
     def composite():
         z = x + r
         y = F.rms_norm(z, (n,), w, 1e-6)
-        s = (y.float().abs().amax(-1, keepdim=True).clamp(min=1e-12)) / 448.0
-        q = (y.float() * (1.0 / s)).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)
+        yf = y.float()  # hoisted: see the plain fp8 composite
+        s = (yf.abs().amax(-1, keepdim=True).clamp(min=1e-12)) / 448.0
+        q = (yf * (1.0 / s)).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)
         return q, z, s
 
     comp_c = _compiled(composite)
