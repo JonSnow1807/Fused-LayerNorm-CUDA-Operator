@@ -35,7 +35,9 @@ from .fused_add import (
     fused_add_rms_norm,
 )
 from .quant import (
+    fused_add_layer_norm_fp8,
     fused_add_rms_norm_fp8,
+    layer_norm_fp8,
     rms_norm_fp8,
 )
 
@@ -56,6 +58,7 @@ __all__ = [
     "RMSNorm",
     "fused_add_layer_norm",
     "fused_add_rms_norm",
+    "fused_add_layer_norm_fp8",
     "fused_add_rms_norm_fp8",
     "is_available",
     "layer_norm",
@@ -63,6 +66,7 @@ __all__ = [
     "replace_layernorm",
     "replace_rmsnorm",
     "rms_norm",
+    "layer_norm_fp8",
     "rms_norm_fp8",
     "__version__",
 ]

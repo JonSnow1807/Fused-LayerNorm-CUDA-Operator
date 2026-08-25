@@ -656,6 +656,138 @@ def _(input, residual, weight=None, eps=1e-6, scale_ub=None):
     return _fp8_out(input), _fp8_scale(input)
 
 
+# LayerNorm-family fp8 ops (v0.5.0): the LN mirror of the six RMS ops above,
+# with the bias parameter LayerNorm carries.
+
+
+@torch.library.custom_op(
+    "fused_layernorm::layer_norm_fp8_static", mutates_args=(), device_types="cuda"
+)
+def layer_norm_fp8_static(
+    input: Tensor,
+    scale: Tensor,
+    weight: Optional[Tensor] = None,
+    bias: Optional[Tensor] = None,
+    eps: float = 1e-5,
+) -> Tensor:
+    out, _ = _require_ext().layernorm_fp8_static(input, scale, weight, bias, eps)
+    return out
+
+
+@layer_norm_fp8_static.register_fake
+def _(input, scale, weight=None, bias=None, eps=1e-5):
+    return _fp8_out(input)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::layer_norm_fp8_dynamic", mutates_args=(), device_types="cuda"
+)
+def layer_norm_fp8_dynamic(
+    input: Tensor,
+    weight: Optional[Tensor] = None,
+    bias: Optional[Tensor] = None,
+    eps: float = 1e-5,
+    scale_ub: Optional[float] = None,
+) -> tuple[Tensor, Tensor]:
+    return _require_ext().layernorm_fp8_dynamic(input, weight, bias, eps, scale_ub)
+
+
+@layer_norm_fp8_dynamic.register_fake
+def _(input, weight=None, bias=None, eps=1e-5, scale_ub=None):
+    return _fp8_out(input), _fp8_scale(input)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::fused_add_layer_norm_fp8_static", mutates_args=(), device_types="cuda"
+)
+def fused_add_layer_norm_fp8_static(
+    input: Tensor,
+    residual: Tensor,
+    scale: Tensor,
+    weight: Optional[Tensor] = None,
+    bias: Optional[Tensor] = None,
+    eps: float = 1e-5,
+) -> tuple[Tensor, Tensor]:
+    out, z, _ = _require_ext().fused_add_layernorm_fp8_static(
+        input, residual, scale, weight, bias, eps, False
+    )
+    return out, z
+
+
+@fused_add_layer_norm_fp8_static.register_fake
+def _(input, residual, scale, weight=None, bias=None, eps=1e-5):
+    return _fp8_out(input), input.new_empty(input.shape)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::fused_add_layer_norm_fp8_static_",
+    mutates_args={"residual"},
+    device_types="cuda",
+)
+def fused_add_layer_norm_fp8_static_(
+    input: Tensor,
+    residual: Tensor,
+    scale: Tensor,
+    weight: Optional[Tensor] = None,
+    bias: Optional[Tensor] = None,
+    eps: float = 1e-5,
+) -> Tensor:
+    out, _, _ = _require_ext().fused_add_layernorm_fp8_static(
+        input, residual, scale, weight, bias, eps, True
+    )
+    return out
+
+
+@fused_add_layer_norm_fp8_static_.register_fake
+def _(input, residual, scale, weight=None, bias=None, eps=1e-5):
+    return _fp8_out(input)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::fused_add_layer_norm_fp8_dynamic", mutates_args=(), device_types="cuda"
+)
+def fused_add_layer_norm_fp8_dynamic(
+    input: Tensor,
+    residual: Tensor,
+    weight: Optional[Tensor] = None,
+    bias: Optional[Tensor] = None,
+    eps: float = 1e-5,
+    scale_ub: Optional[float] = None,
+) -> tuple[Tensor, Tensor, Tensor]:
+    return _require_ext().fused_add_layernorm_fp8_dynamic(
+        input, residual, weight, bias, eps, scale_ub, False
+    )
+
+
+@fused_add_layer_norm_fp8_dynamic.register_fake
+def _(input, residual, weight=None, bias=None, eps=1e-5, scale_ub=None):
+    return _fp8_out(input), input.new_empty(input.shape), _fp8_scale(input)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::fused_add_layer_norm_fp8_dynamic_",
+    mutates_args={"residual"},
+    device_types="cuda",
+)
+def fused_add_layer_norm_fp8_dynamic_(
+    input: Tensor,
+    residual: Tensor,
+    weight: Optional[Tensor] = None,
+    bias: Optional[Tensor] = None,
+    eps: float = 1e-5,
+    scale_ub: Optional[float] = None,
+) -> tuple[Tensor, Tensor]:
+    out, _, s = _require_ext().fused_add_layernorm_fp8_dynamic(
+        input, residual, weight, bias, eps, scale_ub, True
+    )
+    return out, s
+
+
+@fused_add_layer_norm_fp8_dynamic_.register_fake
+def _(input, residual, weight=None, bias=None, eps=1e-5, scale_ub=None):
+    return _fp8_out(input), _fp8_scale(input)
+
+
 @torch.library.custom_op(
     "fused_layernorm::layer_norm_gelu", mutates_args=(), device_types="cuda"
 )

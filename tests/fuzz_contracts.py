@@ -114,6 +114,19 @@ def fuzz_fp8(rounds: int) -> None:
                   torch.equal(o[live].view(torch.uint8),
                               _quant_ref(y[live], s_dyn[live]).view(torch.uint8)),
                   f"{m}x{n} {dt}")
+            # LayerNorm mirror (v0.5.0): same contracts, with bias.
+            b = torch.randn(n, device="cuda", dtype=dt)
+            yl = fl.layer_norm(x, (n,), w, b, 1e-5)
+            ol, sl = fl.layer_norm_fp8(x, (n,), w, b, 1e-5)
+            livel = ~torch.isnan(sl).squeeze(-1)
+            check("ln fp8 dyn bytes",
+                  torch.equal(ol[livel].view(torch.uint8),
+                              _quant_ref(yl[livel], sl[livel]).view(torch.uint8)),
+                  f"{m}x{n} {dt}")
+            ol_s, _ = fl.layer_norm_fp8(x, (n,), w, b, 1e-5, scale=s)
+            check("ln fp8 static bytes",
+                  torch.equal(ol_s.view(torch.uint8), _quant_ref(yl, s).view(torch.uint8)),
+                  f"{m}x{n} {dt}")
 
 
 def fuzz_backward(rounds: int) -> None:

@@ -109,6 +109,20 @@ void layernorm_fwd_train_cuda_launch(const at::Tensor& input2d,
                                      double eps,
                                      fused_norm::NormEpilogue epi = fused_norm::NormEpilogue::kNone);
 
+// fp8-output LayerNorm forward (norm_fwd_ln.cu), plain or fused-add,
+// inference-only — the LN mirror of rmsnorm_fwd_cuda_launch's fp8 legs.
+// output2d has dtype float8_e4m3fn; epi is kFp8Static or kFp8Dynamic with
+// epi_params carrying the scale tensor(s); fp64 inputs are rejected.
+void layernorm_fp8_fwd_cuda_launch(const at::Tensor& input2d,
+                                   const at::Tensor& residual_in2d_or_undef,
+                                   const at::Tensor& weight_or_undef,
+                                   const at::Tensor& bias_or_undef,
+                                   at::Tensor& output2d,
+                                   at::Tensor& residual_out2d_or_undef,
+                                   double eps,
+                                   fused_norm::NormEpilogue epi,
+                                   const fused_norm::EpilogueParams& epi_params = {});
+
 // Backward (norm_bwd.cu; GELU instantiations in norm_bwd_gelu.cu). xz2d is
 // what the forward normalised (input, or the rounded sum for fused-add);
 // mean is defined iff LayerNorm; dz_extra (when defined) is the downstream

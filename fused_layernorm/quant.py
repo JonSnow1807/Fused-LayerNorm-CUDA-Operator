@@ -1,6 +1,6 @@
-"""fp8-E4M3 quantised-output RMSNorm ops (inference-only).
+"""fp8-E4M3 quantised-output norm ops (RMS and LayerNorm; inference-only).
 
-LLM serving stacks feed RMSNorm outputs straight into fp8 GEMMs; fusing the
+LLM serving stacks feed norm outputs straight into fp8 GEMMs; fusing the
 quantisation into the norm kernel removes a full read+write of the activation.
 Two scaling modes:
 
@@ -11,7 +11,7 @@ Two scaling modes:
   broadcast dim so ``out.float() * scale`` dequantises directly.
 
 Byte-level contract (tested): the fp8 output equals quantising the plain
-``rms_norm`` output with ``round_e4m3(clamp(y * (1/scale), ±448))`` — note the
+``rms_norm``/``layer_norm`` output with ``round_e4m3(clamp(y * (1/scale), ±448))`` — note the
 reciprocal multiply. ``scale`` is the DEQUANT scale (``y ≈ out.float() *
 scale``), the vLLM/TensorRT convention.
 
@@ -29,7 +29,12 @@ import torch.nn.functional as F
 
 from ._common import _as_shape, _eligible, _ext, _needs_grad, _resolve_rms_eps, _Shape
 
-__all__ = ["rms_norm_fp8", "fused_add_rms_norm_fp8"]
+__all__ = [
+    "rms_norm_fp8",
+    "fused_add_rms_norm_fp8",
+    "layer_norm_fp8",
+    "fused_add_layer_norm_fp8",
+]
 
 _FP8_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
@@ -147,5 +152,100 @@ def fused_add_rms_norm_fp8(
     else:
         z = input + residual
     y = F.rms_norm(z, shape, weight, eps_c)
+    s = scale if scale is not None else _dynamic_scale_ref(y, scale_ub)
+    return _quantize_ref(y, s), z, s
+
+
+def layer_norm_fp8(
+    input: torch.Tensor,
+    normalized_shape: _Shape,
+    weight: Optional[torch.Tensor] = None,
+    bias: Optional[torch.Tensor] = None,
+    eps: float = 1e-5,
+    *,
+    scale: Optional[torch.Tensor] = None,
+    scale_ub: Optional[float] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """LayerNorm with fused fp8-E4M3 output. Returns ``(out_fp8, scale)``.
+
+    The LayerNorm mirror of :func:`rms_norm_fp8` (same scaling modes, same
+    byte-level contract against the plain ``layer_norm`` output), with the
+    bias term LayerNorm carries.
+    """
+    shape = _as_shape(normalized_shape)
+    _check_quant_call(input, weight, bias, scale=scale, scale_ub=scale_ub)
+    if _eligible(input, shape, weight, bias, ext_available=_ext is not None):
+        if not torch.compiler.is_compiling():  # eager fast path (see layer_norm)
+            if scale is not None:
+                out, _ = _ext.layernorm_fp8_static(input, scale, weight, bias, eps)
+                return out, scale
+            return _ext.layernorm_fp8_dynamic(input, weight, bias, eps, scale_ub)
+        if scale is not None:
+            out = torch.ops.fused_layernorm.layer_norm_fp8_static(
+                input, scale, weight, bias, eps)
+            return out, scale
+        return torch.ops.fused_layernorm.layer_norm_fp8_dynamic(
+            input, weight, bias, eps, scale_ub)
+    # Eager composite fallback: numerically identical by construction.
+    y = F.layer_norm(input, shape, weight, bias, eps)
+    s = scale if scale is not None else _dynamic_scale_ref(y, scale_ub)
+    return _quantize_ref(y, s), s
+
+
+def fused_add_layer_norm_fp8(
+    input: torch.Tensor,
+    residual: torch.Tensor,
+    normalized_shape: _Shape,
+    weight: Optional[torch.Tensor] = None,
+    bias: Optional[torch.Tensor] = None,
+    eps: float = 1e-5,
+    *,
+    scale: Optional[torch.Tensor] = None,
+    scale_ub: Optional[float] = None,
+    inplace: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """``new_residual = input + residual; out = fp8(layer_norm(new_residual))``.
+
+    Returns ``(out_fp8, new_residual, scale)``; the LayerNorm mirror of
+    :func:`fused_add_rms_norm_fp8` (same inplace and scaling semantics).
+    """
+    shape = _as_shape(normalized_shape)
+    _check_quant_call(input, residual, weight, bias, scale=scale, scale_ub=scale_ub)
+    if _eligible(input, shape, residual, weight, bias, ext_available=_ext is not None):
+        if not torch.compiler.is_compiling():
+            if inplace:
+                if scale is not None:
+                    out, z, _ = _ext.fused_add_layernorm_fp8_static(
+                        input, residual, scale, weight, bias, eps, True)
+                    return out, residual, scale
+                return _ext.fused_add_layernorm_fp8_dynamic(
+                    input, residual, weight, bias, eps, scale_ub, True)
+            if scale is not None:
+                out, z, _ = _ext.fused_add_layernorm_fp8_static(
+                    input, residual, scale, weight, bias, eps, False)
+                return out, z, scale
+            return _ext.fused_add_layernorm_fp8_dynamic(
+                input, residual, weight, bias, eps, scale_ub, False)
+        ops = torch.ops.fused_layernorm
+        if inplace:
+            if scale is not None:
+                out = ops.fused_add_layer_norm_fp8_static_(
+                    input, residual, scale, weight, bias, eps)
+                return out, residual, scale
+            out, s = ops.fused_add_layer_norm_fp8_dynamic_(
+                input, residual, weight, bias, eps, scale_ub)
+            return out, residual, s
+        if scale is not None:
+            out, z = ops.fused_add_layer_norm_fp8_static(
+                input, residual, scale, weight, bias, eps)
+            return out, z, scale
+        return ops.fused_add_layer_norm_fp8_dynamic(
+            input, residual, weight, bias, eps, scale_ub)
+    # Eager composite fallback.
+    if inplace:
+        z = residual.add_(input)
+    else:
+        z = input + residual
+    y = F.layer_norm(z, shape, weight, bias, eps)
     s = scale if scale is not None else _dynamic_scale_ref(y, scale_ub)
     return _quantize_ref(y, s), z, s

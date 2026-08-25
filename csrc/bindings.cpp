@@ -425,24 +425,29 @@ std::tuple<at::Tensor, at::Tensor> rmsnorm_bwd(const at::Tensor& dy,
   return {dx, dgamma};
 }
 
-// Shared implementation of the fp8-output RMSNorm entry points (plain and
-// fused-add, static and dynamic scale). Inference-only. Returns
-// (out_fp8, residual_out_or_undef, scale_out_or_undef).
-std::tuple<at::Tensor, at::Tensor, at::Tensor> rmsnorm_fp8_impl(
+// Shared implementation of the fp8-output norm entry points (LayerNorm and
+// RMSNorm, plain and fused-add, static and dynamic scale). Inference-only.
+// Returns (out_fp8, residual_out_or_undef, scale_out_or_undef). bias is
+// LayerNorm-only (RMSNorm callers pass nullopt).
+std::tuple<at::Tensor, at::Tensor, at::Tensor> norm_fp8_impl(
     const at::Tensor& input,
     const std::optional<at::Tensor>& residual,  // fused-add iff given
     const std::optional<at::Tensor>& weight,
+    const std::optional<at::Tensor>& bias,
     double eps,
     const std::optional<at::Tensor>& scale,     // static iff given, else dynamic
     double scale_ub,                             // dynamic only; <= 0 => unused
-    bool inplace) {
+    bool inplace,
+    bool rms) {
   TORCH_CHECK(input.is_cuda(), "input must be a CUDA tensor, but it is on ", input.device());
   TORCH_CHECK(input.dim() >= 1, "input must have rank >= 1");
   const auto st = input.scalar_type();
   TORCH_CHECK(st == at::kFloat || st == at::kHalf || st == at::kBFloat16,
               "fp8 ops support float32, float16 or bfloat16 inputs, got ", st);
+  TORCH_CHECK(!(rms && bias.has_value()), "RMSNorm has no bias");
   const int64_t N = input.size(-1);
   const at::Tensor w = check_affine(weight, "weight", input, N);
+  const at::Tensor b = check_affine(bias, "bias", input, N);
 
   const bool fused_add = residual.has_value();
   at::Tensor res;
@@ -460,7 +465,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rmsnorm_fp8_impl(
   }
   TORCH_CHECK(!(at::GradMode::is_enabled() &&
                 (input.requires_grad() || (fused_add && res.requires_grad()) ||
-                 (w.defined() && w.requires_grad()))),
+                 (w.defined() && w.requires_grad()) ||
+                 (b.defined() && b.requires_grad()))),
               "fp8 norm ops are inference-only");
 
   auto leading = input.sizes().vec();
@@ -505,7 +511,11 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rmsnorm_fp8_impl(
     params.scale_in = scale->contiguous();
   }
 
-  rmsnorm_fwd_cuda_launch(x2d, r2d, w, y2d, z2d, /*rstd=*/undef, eps, epi, params);
+  if (rms) {
+    rmsnorm_fwd_cuda_launch(x2d, r2d, w, y2d, z2d, /*rstd=*/undef, eps, epi, params);
+  } else {
+    layernorm_fp8_fwd_cuda_launch(x2d, r2d, w, b, y2d, z2d, eps, epi, params);
+  }
 
   at::Tensor z_out;
   if (fused_add) z_out = inplace ? res : z2d.view(input.sizes());
@@ -518,7 +528,8 @@ std::tuple<at::Tensor, at::Tensor> rmsnorm_fp8_static(const at::Tensor& input,
                                                       const at::Tensor& scale,
                                                       const std::optional<at::Tensor>& weight,
                                                       double eps) {
-  auto [y, z, s] = rmsnorm_fp8_impl(input, std::nullopt, weight, eps, scale, 0.0, false);
+  auto [y, z, s] = norm_fp8_impl(input, std::nullopt, weight, std::nullopt, eps, scale,
+                                 0.0, false, /*rms=*/true);
   return {y, scale};
 }
 
@@ -527,8 +538,8 @@ std::tuple<at::Tensor, at::Tensor> rmsnorm_fp8_dynamic(const at::Tensor& input,
                                                        double eps,
                                                        const std::optional<double>& scale_ub) {
   auto [y, z, s] =
-      rmsnorm_fp8_impl(input, std::nullopt, weight, eps, std::nullopt,
-                       scale_ub.value_or(0.0), false);
+      norm_fp8_impl(input, std::nullopt, weight, std::nullopt, eps, std::nullopt,
+                    scale_ub.value_or(0.0), false, /*rms=*/true);
   return {y, s};
 }
 
@@ -539,7 +550,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> fused_add_rmsnorm_fp8_static(
     const std::optional<at::Tensor>& weight,
     double eps,
     bool inplace) {
-  auto [y, z, s] = rmsnorm_fp8_impl(input, residual, weight, eps, scale, 0.0, inplace);
+  auto [y, z, s] = norm_fp8_impl(input, residual, weight, std::nullopt, eps, scale, 0.0,
+                                 inplace, /*rms=*/true);
   return {y, z, scale};
 }
 
@@ -550,8 +562,56 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> fused_add_rmsnorm_fp8_dynamic(
     double eps,
     const std::optional<double>& scale_ub,
     bool inplace) {
-  return rmsnorm_fp8_impl(input, residual, weight, eps, std::nullopt,
-                          scale_ub.value_or(0.0), inplace);
+  return norm_fp8_impl(input, residual, weight, std::nullopt, eps, std::nullopt,
+                       scale_ub.value_or(0.0), inplace, /*rms=*/true);
+}
+
+
+std::tuple<at::Tensor, at::Tensor> layernorm_fp8_static(
+    const at::Tensor& input,
+    const at::Tensor& scale,
+    const std::optional<at::Tensor>& weight,
+    const std::optional<at::Tensor>& bias,
+    double eps) {
+  auto [y, z, s] = norm_fp8_impl(input, std::nullopt, weight, bias, eps, scale, 0.0, false,
+                                 /*rms=*/false);
+  return {y, scale};
+}
+
+std::tuple<at::Tensor, at::Tensor> layernorm_fp8_dynamic(
+    const at::Tensor& input,
+    const std::optional<at::Tensor>& weight,
+    const std::optional<at::Tensor>& bias,
+    double eps,
+    const std::optional<double>& scale_ub) {
+  auto [y, z, s] = norm_fp8_impl(input, std::nullopt, weight, bias, eps, std::nullopt,
+                                 scale_ub.value_or(0.0), false, /*rms=*/false);
+  return {y, s};
+}
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor> fused_add_layernorm_fp8_static(
+    const at::Tensor& input,
+    const at::Tensor& residual,
+    const at::Tensor& scale,
+    const std::optional<at::Tensor>& weight,
+    const std::optional<at::Tensor>& bias,
+    double eps,
+    bool inplace) {
+  auto [y, z, s] = norm_fp8_impl(input, residual, weight, bias, eps, scale, 0.0, inplace,
+                                 /*rms=*/false);
+  return {y, z, scale};
+}
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor> fused_add_layernorm_fp8_dynamic(
+    const at::Tensor& input,
+    const at::Tensor& residual,
+    const std::optional<at::Tensor>& weight,
+    const std::optional<at::Tensor>& bias,
+    double eps,
+    const std::optional<double>& scale_ub,
+    bool inplace) {
+  return norm_fp8_impl(input, residual, weight, bias, eps, std::nullopt,
+                       scale_ub.value_or(0.0), inplace, /*rms=*/false);
 }
 
 // RMSNorm over the last dimension: y = x * rsqrt(mean(x^2) + eps) [* weight].
@@ -711,6 +771,35 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "(out_fp8, residual_out, scale[leading dims]).",
         py::arg("input"), py::arg("residual"), py::arg("weight") = py::none(),
         py::arg("eps") = 1e-6, py::arg("scale_ub") = py::none(), py::arg("inplace") = false);
+
+  m.def("layernorm_fp8_static", &layernorm_fp8_static,
+        "LayerNorm with fused fp8-E4M3 output, per-tensor dequant scale ([1] fp32 CUDA\n"
+        "tensor, read on device - graph-capturable). Returns (out_fp8, scale).\n"
+        "The fp8 bytes equal quantising layernorm()'s own output (composite\n"
+        "equivalence). Inference-only.",
+        py::arg("input"), py::arg("scale"), py::arg("weight") = py::none(),
+        py::arg("bias") = py::none(), py::arg("eps") = 1e-5);
+
+  m.def("layernorm_fp8_dynamic", &layernorm_fp8_dynamic,
+        "LayerNorm with fused fp8-E4M3 output and per-row dynamic scale (amax/448,\n"
+        "optionally clamped to scale_ub). Returns (out_fp8, scale[leading dims]).\n"
+        "Inference-only.",
+        py::arg("input"), py::arg("weight") = py::none(), py::arg("bias") = py::none(),
+        py::arg("eps") = 1e-5, py::arg("scale_ub") = py::none());
+
+  m.def("fused_add_layernorm_fp8_static", &fused_add_layernorm_fp8_static,
+        "fused_add_layernorm with fp8-E4M3 output (static scale). Returns\n"
+        "(out_fp8, residual_out, scale). Same inplace rules as fused_add_layernorm.",
+        py::arg("input"), py::arg("residual"), py::arg("scale"),
+        py::arg("weight") = py::none(), py::arg("bias") = py::none(),
+        py::arg("eps") = 1e-5, py::arg("inplace") = false);
+
+  m.def("fused_add_layernorm_fp8_dynamic", &fused_add_layernorm_fp8_dynamic,
+        "fused_add_layernorm with fp8-E4M3 output (dynamic per-row scale). Returns\n"
+        "(out_fp8, residual_out, scale[leading dims]).",
+        py::arg("input"), py::arg("residual"), py::arg("weight") = py::none(),
+        py::arg("bias") = py::none(), py::arg("eps") = 1e-5,
+        py::arg("scale_ub") = py::none(), py::arg("inplace") = false);
 
   m.attr("__version__") = FLN_VERSION_STRING;
 }

@@ -190,3 +190,118 @@ def test_nan_poisons_values_and_dynamic_scale(dtype) -> None:
         # scale_ub must not un-poison the scale either
         _, s_ub = rms_norm_fp8(x, (512,), w, 1e-6, scale_ub=1.0)
         assert torch.isnan(s_ub[2]).all()
+
+
+# --------------------------------------------------------------------------- #
+# LayerNorm-family fp8 (v0.5.0): the LN mirror of everything above.
+# --------------------------------------------------------------------------- #
+
+from fused_layernorm import fused_add_layer_norm_fp8, layer_norm, layer_norm_fp8  # noqa: E402
+
+
+def test_layer_norm_fp8_cpu_fallback_and_guards() -> None:
+    x = torch.randn(4, 64)
+    w = torch.rand(64) + 0.5
+    b = torch.randn(64)
+    out, s = layer_norm_fp8(x, (64,), w, b)
+    assert out.dtype == torch.float8_e4m3fn and s.shape == (4, 1)
+    ref = torch.nn.functional.layer_norm(x, (64,), w, b, 1e-5)
+    assert (out.float() * s - ref).abs().max().item() < s.max().item() * 32
+
+    xg = torch.randn(4, 64, requires_grad=True)
+    with pytest.raises(RuntimeError, match="inference-only"):
+        layer_norm_fp8(xg, (64,), w, b)
+    with pytest.raises(ValueError, match="scale_ub"):
+        layer_norm_fp8(x, (64,), w, b, scale=torch.tensor([0.1]), scale_ub=1.0)
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+@pytest.mark.parametrize("dtype", FP8_DTYPES, ids=str)
+@pytest.mark.parametrize("shape", FP8_SHAPES, ids=lambda s: "x".join(map(str, s)))
+def test_ln_dynamic_byte_equals_quantized_plain_norm(shape, dtype) -> None:
+    x = _randn(shape, dtype)
+    w, b = _affine(shape[-1], dtype)
+    with torch.no_grad():
+        out, s = layer_norm_fp8(x, (shape[-1],), w, b, 1e-5)
+        y = layer_norm(x, (shape[-1],), w, b, 1e-5)
+    assert torch.equal(_bytes(out), _bytes(_quantize_ref(y, s)))
+    amax = y.float().abs().amax(-1, keepdim=True).clamp(min=1e-12)
+    ref_s = amax / 448.0
+    assert ((s - ref_s).abs() <= ref_s * 1e-6 + 1e-12).all()
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+@pytest.mark.parametrize("dtype", FP8_DTYPES, ids=str)
+def test_ln_static_byte_contract_and_saturation(dtype) -> None:
+    x = _randn((32, 512), dtype)
+    w, b = _affine(512, dtype)
+    scale = torch.tensor([0.02], device=DEVICE)
+    with torch.no_grad():
+        out, s_back = layer_norm_fp8(x, (512,), w, b, 1e-5, scale=scale)
+        y = layer_norm(x, (512,), w, b, 1e-5)
+    assert s_back is scale
+    assert torch.equal(_bytes(out), _bytes(_quantize_ref(y, 0.02)))
+    big = (torch.ones(4, 64, device=DEVICE) * 1000).to(dtype)
+    out_b, _ = layer_norm_fp8(big, (64,), None, None, 1e-5,
+                              scale=torch.tensor([1e-4], device=DEVICE))
+    assert torch.isfinite(out_b.float()).all()
+    assert out_b.float().abs().max().item() <= 448.0
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+def test_ln_fused_add_fp8_dynamic_and_inplace() -> None:
+    x = _randn((32, 512), torch.float16)
+    r = _randn((32, 512), torch.float16)
+    w, b = _affine(512, torch.float16)
+    with torch.no_grad():
+        out, z, s = fused_add_layer_norm_fp8(x, r, (512,), w, b, 1e-5)
+        assert torch.equal(z, x + r)  # residual stream stays fp16
+        y = layer_norm(z, (512,), w, b, 1e-5)
+        assert torch.equal(_bytes(out), _bytes(_quantize_ref(y, s)))
+        # inplace mutates residual and returns it as new_residual
+        r2 = r.clone()
+        out2, z2, s2 = fused_add_layer_norm_fp8(x, r2, (512,), w, b, 1e-5, inplace=True)
+        assert z2 is r2 and torch.equal(r2, x + r)
+        assert torch.equal(_bytes(out2), _bytes(out)) and torch.equal(s2, s)
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+def test_ln_nan_poisons_values_and_dynamic_scale() -> None:
+    x = _randn((6, 512), torch.float16)
+    x[2, 7] = float("nan")
+    w, b = _affine(512, torch.float16)
+    with torch.no_grad():
+        out, s = layer_norm_fp8(x, (512,), w, b, 1e-5)
+    assert torch.isnan(s[2]).all()
+    assert torch.isnan(out[2].float()).all()
+    clean = [i for i in range(6) if i != 2]
+    assert torch.isfinite(s[clean]).all()
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+def test_ln_fp8_opcheck_and_compile() -> None:
+    x = _randn((8, 256), torch.float16)
+    w, b = _affine(256, torch.float16)
+    scale = torch.tensor([0.05], device=DEVICE)
+    torch.library.opcheck(
+        torch.ops.fused_layernorm.layer_norm_fp8_dynamic.default, (x, w, b, 1e-5, None)
+    )
+    torch.library.opcheck(
+        torch.ops.fused_layernorm.layer_norm_fp8_static.default, (x, scale, w, b, 1e-5)
+    )
+
+    def fn(x, w, b):
+        out, s = layer_norm_fp8(x, (256,), w, b, 1e-5)
+        return out.float() * s
+
+    with torch.no_grad():
+        torch._dynamo.reset()
+        explanation = torch._dynamo.explain(fn)(x, w, b)
+        assert explanation.graph_break_count == 0
+        compiled = torch.compile(fn, fullgraph=True)
+        torch.testing.assert_close(compiled(x, w, b), fn(x, w, b))
