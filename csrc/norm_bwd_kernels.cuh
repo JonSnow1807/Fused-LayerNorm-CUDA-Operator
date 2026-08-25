@@ -34,6 +34,7 @@
 #include <cstdint>
 
 #include "norm_reduce.cuh"
+#include "norm_vec.cuh"
 
 namespace fused_norm {
 
@@ -84,6 +85,84 @@ __global__ void norm_bwd_dx_kernel(const scalar_t* __restrict__ dy,
     acc_t v = rs * (g - c1 - xhat * c2);
     if (DZ != nullptr) v += static_cast<acc_t>(DZ[i]);
     DX[i] = static_cast<scalar_t>(v);
+  }
+}
+
+// Vectorised dx kernel: identical math and reduction to the scalar flavour
+// above, with 16-byte Vec loads/stores (dy, xz, gamma, dz_extra, dx). Keeps
+// the two-pass structure deliberately: the row a block owns stays resident
+// in L1/L2 between the passes (the same argument as the forward's store-pass
+// re-read), so caching it in registers would cost occupancy for no HBM
+// saving — a measured non-choice, not an oversight.
+template <typename scalar_t, typename acc_t, bool kRMS>
+__global__ void norm_bwd_dx_vec_kernel(const scalar_t* __restrict__ dy,
+                                       const scalar_t* __restrict__ dz_extra,  // null => 0
+                                       const scalar_t* __restrict__ xz,
+                                       const acc_t* __restrict__ mean,         // null iff kRMS
+                                       const acc_t* __restrict__ rstd,
+                                       const scalar_t* __restrict__ gamma,     // null => 1
+                                       scalar_t* __restrict__ dx,
+                                       int64_t N) {
+  using V = Vec<scalar_t>;
+  constexpr int kW = kVecWidth<scalar_t>;
+  const int64_t row = blockIdx.x;
+  const int tid = threadIdx.x;
+  const int stride = blockDim.x;
+  const int64_t nvec = N / kW;
+
+  const V* DY = reinterpret_cast<const V*>(dy + row * N);
+  const V* XZ = reinterpret_cast<const V*>(xz + row * N);
+  const V* DZ =
+      dz_extra != nullptr ? reinterpret_cast<const V*>(dz_extra + row * N) : nullptr;
+  const V* G = gamma != nullptr ? reinterpret_cast<const V*>(gamma) : nullptr;
+  V* DX = reinterpret_cast<V*>(dx + row * N);
+  const acc_t mu = kRMS ? static_cast<acc_t>(0) : mean[row];
+  const acc_t rs = rstd[row];
+
+  __shared__ acc_t s_c1;  // sum(g) / N          (LayerNorm only; 0 for RMS)
+  __shared__ acc_t s_c2;  // sum(g * xhat) / N
+
+  Sum2<acc_t> sums;
+  for (int64_t i = tid; i < nvec; i += stride) {
+    const V dyv = DY[i];
+    const V xzv = XZ[i];
+    V gv;
+    if (G) gv = G[i];
+#pragma unroll
+    for (int k = 0; k < kW; ++k) {
+      const acc_t g = static_cast<acc_t>(dyv.v[k]) *
+                      (G ? static_cast<acc_t>(gv.v[k]) : static_cast<acc_t>(1));
+      const acc_t xhat = (static_cast<acc_t>(xzv.v[k]) - mu) * rs;
+      if constexpr (!kRMS) sums.a += g;
+      sums.b += g * xhat;
+    }
+  }
+  sums = blockReduceSum2<acc_t>(sums);
+  if (tid == 0) {
+    s_c1 = kRMS ? static_cast<acc_t>(0) : sums.a / static_cast<acc_t>(N);
+    s_c2 = sums.b / static_cast<acc_t>(N);
+  }
+  __syncthreads();
+  const acc_t c1 = s_c1;
+  const acc_t c2 = s_c2;
+
+  for (int64_t i = tid; i < nvec; i += stride) {
+    const V dyv = DY[i];
+    const V xzv = XZ[i];
+    V gv, dzv;
+    if (G) gv = G[i];
+    if (DZ) dzv = DZ[i];
+    V out;
+#pragma unroll
+    for (int k = 0; k < kW; ++k) {
+      const acc_t g = static_cast<acc_t>(dyv.v[k]) *
+                      (G ? static_cast<acc_t>(gv.v[k]) : static_cast<acc_t>(1));
+      const acc_t xhat = (static_cast<acc_t>(xzv.v[k]) - mu) * rs;
+      acc_t v = rs * (g - c1 - xhat * c2);
+      if (DZ) v += static_cast<acc_t>(dzv.v[k]);
+      out.v[k] = static_cast<scalar_t>(v);
+    }
+    DX[i] = out;
   }
 }
 

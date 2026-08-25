@@ -26,18 +26,24 @@ namespace fused_norm {
 //     vector width — see aligned16 in norm_vec.cuh).
 constexpr int64_t kVecMinRows = 256;
 
-inline bool choose_vec(bool vectorisable, int64_t M, int64_t N) {
-  bool vec = vectorisable && (N >= 128) && (M >= kVecMinRows);
-
-  // Debug/benchmark override: FUSED_LAYERNORM_FORCE_KERNEL=scalar|vec pins the
-  // kernel choice (used to produce the committed scalar-baseline results).
-  // Forcing "vec" still requires the layout to be vectorisable at all.
+// Debug/benchmark override: FUSED_LAYERNORM_FORCE_KERNEL=scalar|vec pins the
+// kernel choice (used to produce the committed scalar-baseline results).
+// Forcing "vec" still requires the layout to be vectorisable at all. Shared
+// by choose_vec (block-per-row grids) and launchers with their own
+// eligibility rule (the backward partials kernel), so the 3-mode test matrix
+// exercises every kernel family. Read once per process.
+inline bool apply_force_kernel_env(bool vec, bool vectorisable) {
   static const char* const force_kernel = std::getenv("FUSED_LAYERNORM_FORCE_KERNEL");
   if (force_kernel != nullptr) {
     if (std::strcmp(force_kernel, "scalar") == 0) vec = false;
     if (std::strcmp(force_kernel, "vec") == 0) vec = vectorisable;
   }
   return vec;
+}
+
+inline bool choose_vec(bool vectorisable, int64_t M, int64_t N) {
+  const bool vec = vectorisable && (N >= 128) && (M >= kVecMinRows);
+  return apply_force_kernel_env(vec, vectorisable);
 }
 
 // Block size, always a power of two (keeps the reductions' warp arithmetic

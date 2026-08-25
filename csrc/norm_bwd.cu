@@ -33,9 +33,7 @@ void norm_bwd_dx_cuda_launch(bool rms,
 
   c10::cuda::CUDAGuard device_guard(xz2d.device());
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  const int threads = fused_norm::choose_block_size(/*vec=*/false, N, /*vec_width=*/1);
   const dim3 grid(static_cast<unsigned int>(M));
-  const dim3 block(static_cast<unsigned int>(threads));
 
   AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half, at::ScalarType::BFloat16, xz2d.scalar_type(), "norm_bwd_dx", [&] {
@@ -49,12 +47,32 @@ void norm_bwd_dx_cuda_launch(bool rms,
         const scalar_t* g =
             weight_or_undef.defined() ? weight_or_undef.data_ptr<scalar_t>() : nullptr;
         scalar_t* dxp = dx2d.data_ptr<scalar_t>();
+
+        // Same vec policy as the forward: every participating pointer 16-byte
+        // aligned and N a multiple of the dtype's vector width. mean/rstd are
+        // per-row acc_t scalars — no gate needed for them.
+        constexpr int kW = fused_norm::kVecWidth<scalar_t>;
+        const bool vectorisable = (N % kW == 0) && fused_norm::aligned16(dyp) &&
+                                  fused_norm::aligned16(xzp) && fused_norm::aligned16(dxp) &&
+                                  (g == nullptr || fused_norm::aligned16(g)) &&
+                                  (dzp == nullptr || fused_norm::aligned16(dzp));
+        const bool vec = fused_norm::choose_vec(vectorisable, M, N);
+        const dim3 block(static_cast<unsigned int>(fused_norm::choose_block_size(vec, N, kW)));
+
+        auto launch = [&](auto rms_tag) {
+          constexpr bool kRMS = decltype(rms_tag)::value;
+          if (vec) {
+            fused_norm::norm_bwd_dx_vec_kernel<scalar_t, acc_t, kRMS>
+                <<<grid, block, 0, stream>>>(dyp, dzp, xzp, meanp, rstdp, g, dxp, N);
+          } else {
+            fused_norm::norm_bwd_dx_kernel<scalar_t, acc_t, kRMS>
+                <<<grid, block, 0, stream>>>(dyp, dzp, xzp, meanp, rstdp, g, dxp, N);
+          }
+        };
         if (rms) {
-          fused_norm::norm_bwd_dx_kernel<scalar_t, acc_t, /*kRMS=*/true>
-              <<<grid, block, 0, stream>>>(dyp, dzp, xzp, meanp, rstdp, g, dxp, N);
+          launch(std::true_type{});
         } else {
-          fused_norm::norm_bwd_dx_kernel<scalar_t, acc_t, /*kRMS=*/false>
-              <<<grid, block, 0, stream>>>(dyp, dzp, xzp, meanp, rstdp, g, dxp, N);
+          launch(std::false_type{});
         }
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
