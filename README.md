@@ -20,8 +20,9 @@ measured claim.
 > suite (currently 289 tests) is run on hardware before any release. v0.3.0
 > (2026‑08‑20) added the first kernel-time measurements; v0.4.0 turned the
 > single forward-only kernel into the library described below; v0.4.1 and
-> v0.4.2 are post-release audit/fuzz patches whose defects — including this
-> repository's own — are itemised in the CHANGELOG rather than paraphrased.
+> v0.4.2 are post-release patches for defects found by re-auditing and
+> fuzzing our own release — each itemised in the CHANGELOG rather than
+> paraphrased.
 
 ## Why this exists
 
@@ -68,8 +69,8 @@ paths (it exists so `torch.autograd.gradcheck` can run). torch ≥ 2.4.
   (`y ≈ out.float() * scale`, the vLLM/TensorRT convention). Static scales
   are read on-device (no host sync; CUDA-graph capturable).
 * Parameter gradients use a deterministic two-stage reduction (fixed-chunk
-  partials + a fixed-shape `sum`), never atomics: backward is bitwise
-  run-to-run reproducible.
+  partials + a fixed-order finalize kernel), never atomics: backward is
+  bitwise run-to-run reproducible.
 * `inplace=True` mutates only the residual, requires it contiguous (no
   silent copy), and is inference-only (raises under grad).
 * NaN never disappears: a NaN input yields NaN fp8 bytes **and** a NaN
@@ -90,9 +91,9 @@ w = torch.rand(4096, device="cuda", dtype=torch.float16) + 0.5
 out, new_res = fln.fused_add_rms_norm(x, res, (4096,), w)
 
 # Drop-in modules. Training works: vectorised, deterministic CUDA backward
-# (>= 1x autograd kernel time at production shapes since v0.5.0).
+# (>= 1x autograd kernel time at M >= 2048 shapes since v0.5.0; A100).
 block = fln.FusedAddRMSNorm(4096, dtype=torch.float16, device="cuda")
-normed, stream = block(x, res)
+normed, new_res2 = block(x, res)
 
 # norm -> fp8 in one kernel (inference; dynamic per-token scales).
 q, scale = fln.rms_norm_fp8(x, (4096,), w)     # q: float8_e4m3fn
@@ -130,9 +131,9 @@ hardware runs do).
 Method for every claim: correctness gates first, then eager per-call latency,
 GPU kernel time from `torch.profiler` (the only number quoted as a kernel
 speedup), and CUDA-graph replay, produced by the committed scripts from a
-clean clone of the release commit, with SM clocks locked at the boost ceiling
-(since v0.4.2 — unlocked clocks moved small-shape kernel times ~30 % between
-days; [`docs/methodology.md`](docs/methodology.md) §7 has the numbers).
+clean clone of the release commit, with SM clocks locked (since v0.4.2 —
+at the boost ceiling on the A100, at the sustained clock on the H100;
+unlocked clocks moved small-shape kernel times ~30 % between days; [`docs/methodology.md`](docs/methodology.md) §7 has the numbers).
 Competitors include the same composite under `torch.compile(fullgraph=True)`
 — beating only eager would be a strawman.
 
@@ -150,12 +151,12 @@ from 512×1024 to 4096×8192:
 |---|---|---|
 | `fused_add_rms_norm` | **1.23–1.59×** | 0.96–0.99× at M ≥ 2048 (0.81× at 512×1024) |
 | `fused_add_layer_norm` | 1.08–1.49× | 0.88–1.00× at M ≥ 2048 |
-| `rms_norm` (vs aten's fused `F.rms_norm`) | 0.99–1.29× | 0.77–1.26× |
+| `rms_norm` (competitor: aten's fused `F.rms_norm`) | 0.99–1.29× | 0.77–1.26× |
 | `rms_norm_fp8` dynamic | **4.9–7.2×** | **1.04–1.76× — ≥ 1 at every shape** |
 | `fused_add_rms_norm_fp8` dynamic | **5.0–6.0×** | **1.01–1.76× — ≥ 1 at every shape** |
 | `layer_norm_fp8` dynamic | 3.5–6.0× | 1.02–1.49× at M ≥ 2048 (0.75× at 512×1024) |
 | `fused_add_layer_norm_fp8` dynamic | 3.6–5.7× | 1.25–1.68× at M ≥ 2048 (0.74× at 512×1024) |
-| training step fwd+bwd (LN / RMS / LN+GELU) | **0.75–1.42× / 0.82–1.44× / 0.80–1.44×** | — |
+| training step fwd+bwd vs autograd (LN / RMS / LN+GELU) | 0.75–1.42× / 0.82–1.44× / 0.80–1.44× | — |
 
 How to read it honestly:
 
@@ -165,15 +166,15 @@ How to read it honestly:
   reduction — still deterministic, no atomics, bitwise run-to-run
   reproducible. A full fwd+bwd LN/RMS step measures **1.17–1.44× of
   PyTorch's autograd at every M ≥ 2048 shape in fp16** (GELU step:
-  1.16–1.44×; fp32: 1.01–1.16×, and the fused GELU step 1.51–1.88×, where
-  autograd pays the erf chain). The
+  1.16–1.44×; fp32: 1.01–1.16×, and the fused GELU step 1.51–1.88× —
+  autograd pays dearly for the erf chain). The
   remaining sub-1× cell is 512×1024 kernel time (0.75–0.86×) plus
   dispatch-bound small-M wall clock (~0.5×) — both engine/launch-bound,
   published, and amortised away by `torch.compile` or larger batches.
 * **The fused-add ops deliver what they promise in eager mode**: the RMS op
   at 1.23–1.59× kernel time over the eager composite (64–86 % of datasheet
-  bandwidth), the LayerNorm op at 1.08–1.49× (35–84 %), both at kernel parity
-  with Inductor's fused codegen at production shapes. On **wall clock** they
+  bandwidth), the LayerNorm op at 1.08–1.49× (35–84 %), both within 0.88-1.00x of
+  Inductor's fused codegen at production shapes (M ≥ 2048). On **wall clock** they
   beat the eager composite everywhere (1.13–1.48×, both dtypes) and the
   compiled composite at most shapes — it pays ~90 µs of guard/dispatch per
   eager call — but ties it at fp16's largest shapes (0.99–1.01×) and **loses
@@ -206,7 +207,7 @@ How to read it honestly:
 ### 2026‑08‑25, H100 80GB HBM3: second-GPU validation (v0.5.0 data)
 
 [`benchmarks/results/2026-08-25_h100-80gb_v050_ops/`](benchmarks/results/2026-08-25_h100-80gb_v050_ops/)
-(same v0.5.0 clone, built for sm90, clocks locked at the sustained
+(same v0.5.0 code, cloned clean at `8af8dbb`, built for sm90, clocks locked at the sustained
 1830 MHz, full suite + fuzz green — the kernels are **correct on Hopper**,
 with native fp8 converts). Two findings, both published as measured:
 
@@ -220,7 +221,8 @@ with native fp8 converts). Two findings, both published as measured:
   0.69–1.20× vs the compiled chain there (A100: ≥ 1× everywhere), so **the
   "≥ 1× vs compiled" claims in the table above are A100 claims**. On wall
   clock the RMS fp8 ops still beat the compiled chain at every fp16 shape
-  (1.00–3.40×). Hopper tuning is the top contributing item; the H100
+  (1.00–3.40×). Hopper-specific tuning is the top item on the contributing
+  list; the H100
   directory's README has the full honest breakdown.
 
 ### 2026‑08‑20, A100‑SXM4‑40GB: LayerNorm kernel time (v0.3.0)

@@ -1,4 +1,4 @@
-// Generic forward kernels for the v0.4.0 op family:
+// Generic forward kernels for the op family:
 //   {LayerNorm, RMSNorm} x {plain, fused residual-add} x epilogue functor,
 // in a scalar (strided) flavour and a 16-byte-vectorised flavour, one thread
 // block per row, following the same structure as the verified v0.3.0

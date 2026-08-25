@@ -2,8 +2,8 @@
 
 This directory contains two benchmark scripts — `bench_layernorm.py` (the
 plain-LayerNorm benchmark whose committed v0.3.0 data it produced) and
-`bench_norms.py` (the v0.4.0 op family: RMSNorm, fused residual-add, fp8,
-training step; built on the same timing core) — the legacy scripts that
+`bench_norms.py` (the full op family: RMSNorm, fused residual-add, fp8,
+GELU, training steps; built on the same timing core) — the legacy scripts that
 produced the numbers in the old README (`legacy/`, kept byte-identical for
 provenance), and committed result files (`results/`).
 
@@ -13,10 +13,17 @@ provenance), and committed result files (`results/`).
   [`results/2026-08-20_a100-40gb_kernel_time/`](results/2026-08-20_a100-40gb_kernel_time/README.md)
   holds `bench_layernorm.py` output (fp32 and fp16, plus a scalar-kernel
   baseline run) for the v0.3.0 kernels on an A100‑SXM4‑40GB, and
-  [`results/2026-08-24_a100-40gb_v040_ops/`](results/2026-08-24_a100-40gb_v040_ops/README.md)
-  holds `bench_norms.py` output for the v0.4.0 op family; each README states
-  the commands, commit and environment. Only these profiler-based files speak
-  about kernel speed.
+  [`results/2026-08-25_a100-40gb_v050_ops/`](results/2026-08-25_a100-40gb_v050_ops/README.md)
+  holds the **current** `bench_norms.py` output for the full op family on the
+  A100, and
+  [`results/2026-08-25_h100-80gb_v050_ops/`](results/2026-08-25_h100-80gb_v050_ops/README.md)
+  the H100 validation run. The superseded generations are kept as history
+  with banners: [`results/2026-08-24_a100-40gb_v040_ops/`](results/2026-08-24_a100-40gb_v040_ops/README.md)
+  (v0.4.0), [`results/2026-08-24_a100-40gb_v041_ops/`](results/2026-08-24_a100-40gb_v041_ops/README.md)
+  (v0.4.1, unlocked clocks) and
+  [`results/2026-08-25_a100-40gb_v042_ops/`](results/2026-08-25_a100-40gb_v042_ops/README.md)
+  (v0.4.2). Each README states the commands, commit and environment. Only
+  these profiler-based files speak about kernel speed.
 * The eager per-call latencies in
   [`results/2025-08-17_a100_eager_latency/`](results/2025-08-17_a100_eager_latency/README.md)
   were taken with the predecessor of the current kernel (commit `12dee09`; same
@@ -36,7 +43,7 @@ Requirements: a CUDA GPU, a CUDA build of `torch`, and the extension built
 `torch` and the Python standard library.
 
 ```bash
-python benchmarks/bench_norms.py                           # v0.4.0 op family, fp16, all ops
+python benchmarks/bench_norms.py                           # full op family, fp16, all ops
 python benchmarks/bench_norms.py --op fused_add_rms_norm --dtype float32
 python benchmarks/bench_layernorm.py                       # plain LayerNorm, default grid, float32
 python benchmarks/bench_layernorm.py --dtype float16
@@ -46,9 +53,11 @@ python benchmarks/bench_layernorm.py --out /tmp/ln-bench   # default: benchmarks
 python benchmarks/bench_layernorm.py --warmup 100 --eps 1e-6 --verbose   # warm-up calls, eps, tracebacks
 ```
 
-Flags: `--shapes MxN,MxN,...`, `--dtype {float32,float16,bfloat16,float64}`, `--iters` (calls per timed
-loop / per graph, default 200), `--reps` (timed repetitions, median reported, default 20), `--warmup`
-(default 50), `--eps` (default 1e-5), `--no-graphs`, `--out DIR`, `--verbose`.
+`bench_layernorm.py` flags: `--shapes MxN,MxN,...`, `--dtype {float32,float16,bfloat16,float64}`,
+`--iters` (calls per timed loop / per graph, default 200), `--reps` (timed repetitions, median
+reported, default 20), `--warmup` (default 50), `--eps` (default 1e-5), `--no-graphs`, `--out DIR`,
+`--verbose`. `bench_norms.py` takes the shared subset: `--op` (repeatable), `--dtype`, `--shapes`,
+`--iters`, `--reps`, `--warmup`, `--out`.
 
 Without a GPU or without the extension the script prints what is missing and
 exits with status 1; it never prints a table it did not measure.

@@ -5,7 +5,8 @@ residual-add + norm, fp8-E4M3 quantised outputs, a real CUDA backward, and
 torch.compile integration without graph breaks. Public API: the functional
 ops (:func:`layer_norm`, :func:`layer_norm_gelu`, :func:`rms_norm`,
 :func:`fused_add_layer_norm`, :func:`fused_add_rms_norm`,
-:func:`rms_norm_fp8`, :func:`fused_add_rms_norm_fp8`), the drop-in modules
+:func:`rms_norm_fp8`, :func:`fused_add_rms_norm_fp8`, :func:`layer_norm_fp8`,
+:func:`fused_add_layer_norm_fp8`), the drop-in modules
 (:class:`LayerNorm`, :class:`RMSNorm`, :class:`FusedAddLayerNorm`,
 :class:`FusedAddRMSNorm`), the per-model replacement helpers
 (:func:`replace_layernorm`, :func:`replace_rmsnorm` — nothing global is

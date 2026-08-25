@@ -1,3 +1,8 @@
+> **Historical artifact, kept unmodified below this banner.** This file
+> celebrates results of a kernel that was later deleted; the claims were
+> retracted in the 2026-08-18 rewrite (see this directory's README and the
+> repository CHANGELOG for what was actually supported).
+
 # Fused LayerNorm CUDA - Performance Achievement
 
 ## ✅ Successfully Achieved 1.4x+ Speedup

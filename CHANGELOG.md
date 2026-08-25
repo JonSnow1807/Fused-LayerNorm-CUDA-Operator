@@ -29,7 +29,8 @@
   `fused_add_layer_norm_fp8` (static + dynamic scales, bias included) — the
   LN mirror of the RMS fp8 path, sharing the same epilogues, byte contract
   and NaN-propagating dynamic scale.
-* Suite grows 260 → 289 tests; the fuzz gains backward and LN-fp8 configs.
+* Suite grows 260 → 289 tests; the fuzz gains backward (RMS) and plain-LN
+  fp8 configs.
 
 ### Measured (2026‑08‑25, A100‑SXM4‑40GB, locked clocks, clean clone `b38a935`)
 
@@ -51,8 +52,8 @@
 ### Measured — H100 addendum (2026‑08‑25, H100 80GB HBM3, locked 1830 MHz)
 
 * First non-A100 data
-  (`benchmarks/results/2026-08-25_h100-80gb_v050_ops/`, same v0.5.0 clone
-  built for sm90; 289 tests × 3 kernel modes + fuzz green — correct on
+  (`benchmarks/results/2026-08-25_h100-80gb_v050_ops/`, clean clone of the
+  v0.5.0 data commit `8af8dbb` built for sm90; 289 tests × 3 kernel modes + fuzz green — correct on
   Hopper, fp8 converts now native). The eager-mode wins transfer and grow
   (`rms_norm_fp8` 7.7–11.4× vs the eager chain in fp16; fused-add 1.0–1.7×;
   training up to 1.79× of autograd; 87 % of datasheet peak), but **the
@@ -297,7 +298,7 @@ NVIDIA A100‑SXM4‑40GB (PyTorch 2.13.0+cu129, CUDA toolkit 12.9).
   heuristic (vectorised iff N divisible by the vector width, N ≥ 128, M ≥ 256, all pointers
   16‑byte aligned; block size ≈ two vectors per thread in [64, 256]). Result (fp32 kernel time,
   committed clean‑provenance run): faster than PyTorch on 9 of 11 benchmark shapes (1.01–1.97×),
-  parity (1.00×) at 8192 × 1024, 0.93× at 512 × 1024. The README's measurement section has the
+  parity (1.00×) at 8192 × 1024, 0.93× at 512 × 1024. The results directory's README has the
   full table.
 * fp16 initially used 4‑element (8‑byte) loads and measured well behind PyTorch at large shapes
   (interim development run, data not retained); switching to 16‑byte loads (8 halves) — and, in

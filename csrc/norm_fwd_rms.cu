@@ -9,7 +9,8 @@
 // Epilogues in this TU: kNone (all dtypes incl. fp64, which exists so
 // torch.autograd.gradcheck can exercise the autograd path) and
 // kFp8Static/kFp8Dynamic (fp32/fp16/bf16 only; output dtype float8_e4m3fn,
-// inference-only - the RMS family is the one LLM serving stacks quantise).
+// inference-only; since v0.5.0 the LN family has the same epilogues in
+// norm_fwd_ln.cu).
 
 #include <cuda_runtime.h>
 

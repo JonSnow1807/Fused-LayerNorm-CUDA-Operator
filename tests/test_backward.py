@@ -194,8 +194,8 @@ def test_fused_add_rms_both_output_grads() -> None:
 @pytest.mark.cuda
 @requires_cuda_ext
 def test_param_grads_bitwise_deterministic() -> None:
-    """dgamma/dbeta use fixed-chunk partials + a fixed-shape aten sum, never
-    atomics: two identical backwards must agree bit for bit."""
+    """dgamma/dbeta use fixed-chunk partials + a fixed-order finalize kernel,
+    never atomics: two identical backwards must agree bit for bit."""
     x, _, w, b = _grad_inputs((4096, 1024), torch.float32, residual=False)
     gy = torch.randn(4096, 1024, device=x.device)
 
@@ -217,12 +217,16 @@ def test_partial_requires_grad_combinations() -> None:
     wg = w.clone().requires_grad_()
     y = layer_norm(x, (128,), wg, b, 1e-5)
     (dw,) = torch.autograd.grad(y.sum(), (wg,))
-    assert dw.shape == wg.shape
+    wr = w.clone().requires_grad_()
+    (dwr,) = torch.autograd.grad(F.layer_norm(x, (128,), wr, b, 1e-5).sum(), (wr,))
+    torch.testing.assert_close(dw, dwr, **GRAD_TOL[torch.float32])
     # input-only grad, weightless call
     xg = x.clone().requires_grad_()
     y = rms_norm(xg, (128,), None, 1e-6)
     (dx,) = torch.autograd.grad(y.sum(), (xg,))
-    assert dx.shape == xg.shape
+    xr = x.clone().requires_grad_()
+    (dxr,) = torch.autograd.grad(F.rms_norm(xr, (128,), None, 1e-6).sum(), (xr,))
+    torch.testing.assert_close(dx, dxr, **GRAD_TOL[torch.float32])
 
 
 @pytest.mark.cuda

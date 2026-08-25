@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark the v0.4.0 op family against honest PyTorch competitors.
+"""Benchmark the fused-norm op family against honest PyTorch competitors.
 
 For each op and shape this reports the same three numbers as
 ``bench_layernorm.py`` (whose timing machinery it imports): eager per-call

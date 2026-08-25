@@ -18,7 +18,7 @@
       "--dtype",
       "float32",
       "--out",
-      "/tmp/claude-1000/-teamspace-studios-this-studio/cc9dbd51-c46c-4747-b7c3-6298f74e29bc/scratchpad/results_v050"
+      "results_v050"
     ],
     "nvidia_driver": "570.148.08",
     "gpu_clock_state": {

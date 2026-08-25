@@ -26,7 +26,7 @@ import contextlib
 import os
 import subprocess
 import sys
-from typing import Iterator, Optional, Tuple
+from typing import Iterator, Tuple
 
 import pytest
 import torch
@@ -45,7 +45,6 @@ from _helpers import (  # noqa: E402
     ALL_DTYPES,
     DEVICE,
     SHAPES,
-    TOL,
     _affine,
     _assert_close,
     _ext,

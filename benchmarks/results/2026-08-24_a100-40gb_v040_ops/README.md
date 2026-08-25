@@ -1,5 +1,12 @@
 # 2026-08-24 — A100-SXM4-40GB — v0.4.0 op-family measurements
 
+> **Superseded** — first by `../2026-08-24_a100-40gb_v041_ops/` (benchmark
+> fairness fix), ultimately by `../2026-08-25_a100-40gb_v050_ops/`. Kept as
+> the historical record of the v0.4.0 claims; this run also predates the
+> locked-clock methodology (methodology §7), so its small-shape numbers are
+> a clock-state snapshot. The backward here was the correctness-first
+> scalar version — v0.5.0 replaced it.
+
 Both files produced by `benchmarks/bench_norms.py` from a **clean clone of the
 v0.4.0 release code commit `5fdb217`** (each JSON's `metadata` records
 `git_commit = 5fdb217…`, `git_dirty = false`, `extension_version = 0.4.0`,

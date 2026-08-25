@@ -1,11 +1,13 @@
 # 2025-08-17 — A100 eager per-call latency (legacy scripts)
 
-These two JSON files are the **only committed measurements in the repository**.
+These two JSON files were, until v0.3.0, the only committed measurements in
+the repository; they are kept as the historical record of the eager-latency
+era (kernel-time data lives in the sibling directories).
 They were taken with the predecessor of the kernel now in the tree (the
 `3686b4c`/`12dee09` kernel: same block-per-row, two-pass mean/variance,
 strided-loop design, but fixed 256/512/1024-thread blocks, fp32 accumulation
-for every dtype and the legacy default stream; the current kernel has not been
-run anywhere yet). They were produced by the legacy scripts in
+for every dtype and the legacy default stream; the current kernels' committed
+measurements start at `../2026-08-20_a100-40gb_kernel_time/`). They were produced by the legacy scripts in
 [`../../legacy/`](../../legacy/README.md) and they measure **eager per-call
 latency** — Python + dispatcher + launch overhead — not kernel execution time.
 Read the "How to read these numbers" section before quoting anything.

@@ -1,8 +1,9 @@
 // Shared declarations between the translation units of the extension:
 //   csrc/bindings.cpp             -- Python bindings, argument validation, reshape to/from 2-D
 //   csrc/layernorm_cuda_kernel.cu -- the original LayerNorm(+GELU) kernels and their launcher
-// Further TUs (RMSNorm, fused-add, backward) are added by v0.4.0 and declare
-// their launchers here as they land.
+//   csrc/norm_fwd_ln.cu / norm_fwd_rms.cu -- generic forward TUs (fused-add, train, fp8)
+//   csrc/norm_bwd.cu / norm_bwd_gelu.cu   -- backward launchers and GELU instantiations
+// Every TU declares its launchers here.
 #pragma once
 
 #include <ATen/ATen.h>
@@ -183,8 +184,8 @@ void norm_bwd_param_partials_gelu_cuda(bool tanh_approx,
 // Stage 2: sums each requested [chunks, N] partials tensor over chunks in
 // fixed ascending order and casts into the (pre-allocated, param-dtype)
 // outputs — both parameters in a single launch, bitwise deterministic. At
-// least one of dgamma/dbeta must be defined; an undefined output (or an
-// undefined dbeta_partials) is skipped.
+// least one of dgamma/dbeta must be defined; an undefined output is skipped,
+// and dbeta_partials must be defined whenever dbeta is.
 void norm_bwd_param_finalize_cuda_launch(const at::Tensor& dgamma_partials,
                                          const at::Tensor& dbeta_partials_or_undef,
                                          at::Tensor& dgamma_or_undef,

@@ -3,17 +3,16 @@
 This module wraps the LayerNorm CUDA kernels behind ``F.layer_norm``-shaped
 functions and an ``nn.LayerNorm`` subclass. Since v0.4.0 the fused path also
 serves gradient-requiring calls (fwd-train kernel + registered CUDA
-backward); ``layer_norm_gelu`` remains the one forward-only entry point.
+backward); since v0.5.0 that includes ``layer_norm_gelu``.
 
 Design rules (see docstrings below for details):
 
 * The extension is imported lazily and optionally.  This module imports fine on
   a machine without CUDA or without the compiled extension; every entry point
   then falls back to plain PyTorch.
-* Gradient-requiring calls run the fused fwd-train kernel with a registered
-  CUDA backward (v0.4.0+); inference calls take the raw extension fast path.
-  ``layer_norm_gelu`` is still forward-only and falls back to PyTorch under
-  autograd — silently breaking autograd would be a correctness bug.
+* Gradient-requiring calls run the fused fwd-train kernels with a registered
+  CUDA backward (v0.4.0+ for ``layer_norm``, v0.5.0+ for ``layer_norm_gelu``);
+  inference calls take the raw extension fast path.
 * Only the last dimension is normalised by the kernel, i.e. only a 1-D
   ``normalized_shape`` equal to ``input.shape[-1]`` is eligible for the fused
   path.  Every other case (multi-dim ``normalized_shape``, CPU tensors, ...) is
@@ -28,7 +27,6 @@ autocast regions and ``weight``/``bias`` whose dtype/device differs from
 ``nn.LayerNorm`` would -- including raising, since PyTorch's own CUDA LayerNorm
 rejects a weight/bias dtype different from the input outside autocast); the
 kernels are used for CUDA tensors of dtype float32/float64/float16/bfloat16.
-``layer_norm_gelu`` remains forward-only (falls back under grad).
 """
 
 from __future__ import annotations
@@ -41,12 +39,10 @@ import torch.nn.functional as F
 
 from ._common import (
     _as_shape,
-    _autocast_active,
     _eligible,
     _ext,
     _needs_grad,
     _replace_modules,
-    _same_dtype_and_device,
     _Shape,
 )
 
@@ -68,33 +64,6 @@ def is_available() -> bool:
     runs the plain PyTorch implementation.
     """
     return _ext is not None and torch.cuda.is_available()
-
-
-def _use_fused(
-    input: torch.Tensor,
-    normalized_shape: tuple,
-    weight: Optional[torch.Tensor],
-    bias: Optional[torch.Tensor],
-) -> bool:
-    """Decide, per call, whether the CUDA kernel can be used.
-
-    All of the following must hold: the extension is importable, ``input`` is
-    a CUDA tensor, ``normalized_shape`` is 1-D and equals ``input.shape[-1]``,
-    ``weight``/``bias`` (when given) have ``input``'s dtype and device, no
-    CUDA autocast region is active, and no gradient is required (the kernel
-    is forward-only).
-
-    The dtype/device and autocast conditions exist so that this wrapper never
-    changes PyTorch's behaviour: under ``torch.autocast`` PyTorch runs
-    ``layer_norm`` in fp32 and returns fp32, whereas the kernel returns
-    ``input.dtype``; and outside autocast PyTorch's CUDA LayerNorm itself
-    rejects a ``weight``/``bias`` dtype different from ``input``.  Handing
-    those calls to PyTorch keeps this module a drop-in replacement (same
-    output dtype, same errors) instead of introducing new semantics.
-    """
-    return _eligible(
-        input, normalized_shape, weight, bias, ext_available=_ext is not None
-    )
 
 
 def layer_norm(

@@ -52,7 +52,7 @@ Outputs: a JSON file and a Markdown table in ``--out`` (default
 measured number; all numbers come from running it.
 
 Limitations: this script benchmarks the plain-LayerNorm forward only (the
-v0.4.0 op family, including backward, is covered by bench_norms.py); one GPU;
+full op family, including backward, is covered by bench_norms.py); one GPU;
 timings depend on GPU clocks, driver, and host CPU - always commit the JSON
 together with the environment metadata it contains.
 """
@@ -252,7 +252,11 @@ def collect_metadata(repo_root: Path, ext_module: Any) -> Dict[str, Any]:
         "git_commit": _git_commit(repo_root),
         "git_dirty": _git_dirty(repo_root),
         "extension_version": getattr(ext_module, "__version__", None),
-        "argv": sys.argv[1:],
+        # Record only basenames of path-valued args: absolute out-dirs are
+        # machine-local noise (and can leak local tooling paths) - the
+        # measured data never depends on them.
+        "argv": [os.path.basename(a.rstrip("/")) if a.startswith("/") else a
+                 for a in sys.argv[1:]],
         "nvidia_driver": _nvidia_driver(),
         "gpu_clock_state": _gpu_clock_state(),
         # Environment that changes what gets measured; None when unset.

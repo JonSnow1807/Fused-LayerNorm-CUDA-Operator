@@ -1,7 +1,7 @@
 // Per-element epilogues applied after normalise+affine, shared by the forward
 // kernels. The GELU device functions were extracted verbatim from
-// layernorm_cuda_kernel.cu (v0.3.0). The fp8 epilogue functors are added in
-// the quant phase of v0.4.0 and documented where they are introduced.
+// layernorm_cuda_kernel.cu (v0.3.0). The fp8, GELU and backward-cotangent
+// functors are later additions, documented where they are introduced.
 #pragma once
 
 #include <cuda_runtime.h>

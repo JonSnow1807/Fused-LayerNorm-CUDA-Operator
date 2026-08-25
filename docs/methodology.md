@@ -87,7 +87,8 @@ single-call time is not a kernel bandwidth.
 
 * Compare against `torch.nn.functional.layer_norm(x, (N,), w, b, eps)` under
   `torch.inference_mode()`, in the same dtype, with the same (non-identity)
-  `w`, `b`. That is the fair functional equivalent of a forward-only kernel.
+  `w`, `b`. That is the fair functional equivalent of an inference call
+  (grad-mode comparisons belong to the training-step benchmark rows).
 * Do **not** compare a raw extension call against an `nn.LayerNorm` module
   call with autograd enabled: the module call additionally records an autograd
   node and keeps `mean`/`rstd` for backward. Two of the three legacy scripts
@@ -193,7 +194,10 @@ persistence mode off the clock state resets whenever the driver unloads. A
 ~10 µs kernel timed under a 200-call profiler loop does not reliably pull the
 SM into full boost, so its measured time depends on whatever clock state the
 machine woke up with: the same v0.4.1 binary measured `rms_norm_fp8` at
-512×1024 as 7.63 µs on release night and a stable 9.81 µs the next day — a
+512×1024 as 7.63 µs on release night (the committed value in
+`benchmarks/results/2026-08-24_a100-40gb_v041_ops/`) and a stable ~9.8 µs
+the next day (reproduced, not committed; the v0.4.2 results README records
+the episode) — a
 29 % swing, almost exactly the 1410/1095 clock ratio — while ≥ 100 µs kernels
 reproduced within ~2 % (sustained load boosts regardless), and *ratios* at
 the affected shapes moved enough to flip a "≥ 1×" claim. Since v0.4.2 every

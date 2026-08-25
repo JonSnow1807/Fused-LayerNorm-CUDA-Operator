@@ -8,7 +8,7 @@
 // the forward's saved per-row statistics (acc dtype). gamma is the forward
 // weight (null => 1). All math in acc_t.
 //
-// dx (one block per row, scalar strided):
+// dx (one block per row; scalar-strided and 16-byte-vectorised flavours):
 //   LayerNorm: xhat = (xz - mean) * rstd;  g = dy * gamma
 //     dx = rstd * (g - sum(g)/N - xhat * sum(g*xhat)/N)        [+ dz_extra]
 //   RMSNorm:   xhat = xz * rstd;           g = dy * gamma
@@ -17,16 +17,22 @@
 //   cotangent of the fused-add op's second output (new_residual): because
 //   z = x + residual, dx = dresidual = norm_dx + dz_extra, so the launcher
 //   adds it elementwise here and the same tensor serves both input grads.
+//   With an activation epilogue (DGrad), dy is replaced per element by
+//   dh = dy * act'(h), h recomputed in-kernel.
 //
 // dgamma/dbeta (two-stage, DETERMINISTIC - no atomics):
-//   Stage 1 (here): grid (ceil(N/32), num_chunks), 32x32 blocks. Each block
-//   owns a 32-column slice and a fixed chunk of rows; per-thread fp32
-//   accumulation over its rows, a shared-memory tree reduce over the row
-//   axis, one write of partials[chunk, col]:
-//     dgamma_p = sum(dy * xhat), dbeta_p = sum(dy).
-//   Stage 2 (bindings): partials.sum(0).to(param dtype) - a fixed-shape aten
-//   reduction, so parameter grads are bitwise run-to-run reproducible.
-//   Atomics would be faster to write and nondeterministic; determinism wins.
+//   Stage 1: each block owns a column slice and a fixed chunk of rows;
+//   per-thread accumulation in the acc dtype over its rows, a fixed
+//   shared-memory tree reduce over the row axis, one write of
+//   partials[chunk, col]: dgamma_p = sum(dy * xhat), dbeta_p = sum(dy).
+//   Scalar flavour: grid (ceil(N/32), num_chunks), 32x32 blocks. Vectorised
+//   flavour: (kPTx, kPTy) = (32, 8) blocks, each thread owning kVecWidth
+//   consecutive columns via one 16-byte load of dy and xz per visited row.
+//   Stage 2 (norm_bwd_param_finalize_kernel below): one launch sums both
+//   partials tensors over chunks in a fixed order and casts to the param
+//   dtype. Every order is a pure function of the shapes, so parameter grads
+//   are bitwise run-to-run reproducible. Atomics would be faster to write
+//   and nondeterministic; determinism wins.
 #pragma once
 
 #include <cuda_runtime.h>
@@ -246,9 +252,11 @@ __global__ void norm_bwd_param_partials_kernel(const scalar_t* __restrict__ dy,
   }
 
   // Transpose-free tree reduce over threadIdx.y (the row dimension of the
-  // block): +33 padding keeps the column accesses bank-conflict-free.
+  // block): the +1 pad (stride 33) keeps the column accesses
+  // bank-conflict-free. kBeta sizes the beta tile so no-beta instantiations
+  // don't pay shared memory for a buffer they never touch.
   __shared__ acc_t s_dg[kTile][kTile + 1];
-  __shared__ acc_t s_db[kTile][kTile + 1];
+  __shared__ acc_t s_db[kBeta ? kTile : 1][kTile + 1];
   s_dg[threadIdx.y][threadIdx.x] = dg;
   if constexpr (kBeta) s_db[threadIdx.y][threadIdx.x] = db;
   __syncthreads();

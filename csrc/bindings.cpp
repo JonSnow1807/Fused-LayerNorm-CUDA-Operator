@@ -26,7 +26,7 @@
 #include <tuple>
 #include <vector>
 
-// Version injected by setup.py as an unquoted token (-DFUSED_LN_VERSION=0.4.0);
+// Version injected by setup.py as an unquoted token (e.g. -DFUSED_LN_VERSION=0.5.0);
 // stringified here (pybind11 VERSION_INFO idiom). "unknown" only for builds
 // that bypass setup.py.
 #ifndef FUSED_LN_VERSION
@@ -94,7 +94,6 @@ at::Tensor layernorm_impl(const at::Tensor& input,
   const at::Tensor x2d = input.contiguous().view({M, N});
   at::Tensor y2d = at::empty_like(x2d);  // same dtype/device, contiguous (M, N)
 
-  using fused_norm::NormEpilogue;
   const NormEpilogue epi = !gelu ? NormEpilogue::kNone
                                  : (gelu_tanh ? NormEpilogue::kGeluTanh : NormEpilogue::kGeluErf);
   layernorm_cuda_launch(x2d, w, b, y2d, eps, epi);
@@ -565,7 +564,6 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> fused_add_rmsnorm_fp8_dynamic(
   return norm_fp8_impl(input, residual, weight, std::nullopt, eps, std::nullopt,
                        scale_ub.value_or(0.0), inplace, /*rms=*/true);
 }
-
 
 std::tuple<at::Tensor, at::Tensor> layernorm_fp8_static(
     const at::Tensor& input,

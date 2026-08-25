@@ -1,4 +1,4 @@
-"""Tests for the fp8-E4M3 quantised-output RMSNorm ops.
+"""Tests for the fp8-E4M3 quantised-output norm ops (RMS and LayerNorm).
 
 The load-bearing check is BYTE EQUALITY against the documented contract:
 fp8_out == round_e4m3(clamp(plain_rms_norm_output * (1/scale), ±448)) — the
@@ -12,7 +12,14 @@ from __future__ import annotations
 import pytest
 import torch
 
-from fused_layernorm import fused_add_rms_norm_fp8, rms_norm, rms_norm_fp8
+from fused_layernorm import (
+    fused_add_layer_norm_fp8,
+    fused_add_rms_norm_fp8,
+    layer_norm,
+    layer_norm_fp8,
+    rms_norm,
+    rms_norm_fp8,
+)
 
 from _helpers import DEVICE, _affine, _randn, requires_cuda_ext
 
@@ -196,7 +203,6 @@ def test_nan_poisons_values_and_dynamic_scale(dtype) -> None:
 # LayerNorm-family fp8 (v0.5.0): the LN mirror of everything above.
 # --------------------------------------------------------------------------- #
 
-from fused_layernorm import fused_add_layer_norm_fp8, layer_norm, layer_norm_fp8  # noqa: E402
 
 
 def test_layer_norm_fp8_cpu_fallback_and_guards() -> None:
