@@ -109,9 +109,17 @@ def _needs(ctx, idx: int) -> bool:
 
 # The statistics outputs are marked non-differentiable in every
 # setup_context: differentiating through them from user code raises at
-# .backward() time, and the engine still materialises ZERO cotangents for
-# them here, which the backward functions ignore (as aten's own
-# native_layer_norm backward does with dmean/drstd).
+# .backward() time. Where the ctx supports it we also switch off cotangent
+# materialisation - otherwise the engine launches a zeros kernel per stats
+# output per backward just so we can ignore the result (as aten's own
+# native_layer_norm backward does with dmean/drstd). With materialisation
+# off, EVERY cotangent can arrive as None, so the backward functions below
+# must handle None grad_y/grad_z explicitly.
+
+
+def _no_materialize(ctx) -> None:
+    if hasattr(ctx, "set_materialize_grads"):  # not guaranteed on older torch
+        ctx.set_materialize_grads(False)
 
 
 @torch.library.custom_op(
@@ -169,9 +177,12 @@ def _layer_norm_setup(ctx, inputs, output):
     ctx.save_for_backward(input, weight, mean, rstd)
     ctx.has_bias = bias is not None
     ctx.mark_non_differentiable(mean, rstd)
+    _no_materialize(ctx)
 
 
 def _layer_norm_backward(ctx, grad_y, grad_mean, grad_rstd):
+    if grad_y is None:  # only the stats received (ignored) cotangents
+        return None, None, None, None
     input, weight, mean, rstd = ctx.saved_tensors
     need_dx, need_dw, need_db = _needs(ctx, 0), _needs(ctx, 1), _needs(ctx, 2)
     dx, dgamma, dbeta = torch.ops.fused_layernorm.layer_norm_bwd(
@@ -233,9 +244,12 @@ def _rms_norm_setup(ctx, inputs, output):
     _, rstd = output
     ctx.save_for_backward(input, weight, rstd)
     ctx.mark_non_differentiable(rstd)
+    _no_materialize(ctx)
 
 
 def _rms_norm_backward(ctx, grad_y, grad_rstd):
+    if grad_y is None:
+        return None, None, None
     input, weight, rstd = ctx.saved_tensors
     need_dx, need_dw = _needs(ctx, 0), _needs(ctx, 1)
     dx, dgamma = torch.ops.fused_layernorm.rms_norm_bwd(
@@ -279,9 +293,15 @@ def _fused_add_ln_setup(ctx, inputs, output):
     ctx.save_for_backward(z, weight, mean, rstd)
     ctx.has_bias = bias is not None
     ctx.mark_non_differentiable(mean, rstd)
+    _no_materialize(ctx)
 
 
 def _fused_add_ln_backward(ctx, grad_y, grad_z, grad_mean, grad_rstd):
+    if grad_y is None:
+        # Only z (the residual stream) carried a cotangent: the norm path
+        # contributes nothing, and since z = input + residual, grad_z IS both
+        # input grads; the parameter grads are exactly zero (None).
+        return grad_z, grad_z, None, None, None
     z, weight, mean, rstd = ctx.saved_tensors
     need_dx, need_dres = _needs(ctx, 0), _needs(ctx, 1)
     need_dw, need_db = _needs(ctx, 2), _needs(ctx, 3)
@@ -326,9 +346,12 @@ def _fused_add_rms_setup(ctx, inputs, output):
     _, z, rstd = output
     ctx.save_for_backward(z, weight, rstd)
     ctx.mark_non_differentiable(rstd)
+    _no_materialize(ctx)
 
 
 def _fused_add_rms_backward(ctx, grad_y, grad_z, grad_rstd):
+    if grad_y is None:  # see _fused_add_ln_backward
+        return grad_z, grad_z, None, None
     z, weight, rstd = ctx.saved_tensors
     need_dx, need_dres, need_dw = _needs(ctx, 0), _needs(ctx, 1), _needs(ctx, 2)
     dz, dgamma = torch.ops.fused_layernorm.rms_norm_bwd(

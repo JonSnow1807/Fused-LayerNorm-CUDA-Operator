@@ -299,6 +299,21 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> fused_add_rmsnorm_fwd_train(
 // is folded into dx (dx == dresidual for fused-add). Unrequested grads come
 // back as empty 0-element tensors (custom-op schemas need fixed arity);
 // Python maps them to None.
+
+// Chunk count for the deterministic parameter-grad partials. Two pressures:
+// enough row chunks that stage 1 has parallel work (M/256 like before), and
+// enough total blocks to fill the GPU when M is small — the partials grid is
+// (~N/256 column blocks) x chunks, so small (M, N) used to strand the kernel
+// on a handful of SMs (512x1024: 8 blocks on 108 SMs). Still a pure function
+// of (M, N, device): grads stay bitwise run-to-run reproducible.
+static int64_t bwd_param_chunks(int64_t M, int64_t N) {
+  const int64_t sms = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
+  const int64_t by_rows = (M + 255) / 256;
+  const int64_t col_blocks = std::max<int64_t>(1, N / 256);
+  const int64_t fill = (2 * sms + col_blocks - 1) / col_blocks;
+  return std::clamp(std::max(by_rows, fill), int64_t{1}, std::min<int64_t>(4 * sms, M));
+}
+
 std::tuple<at::Tensor, at::Tensor, at::Tensor> layernorm_bwd(
     const at::Tensor& dy,
     const at::Tensor& xz,
@@ -337,14 +352,16 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> layernorm_bwd(
     if (need_dbeta) dbeta = at::zeros({N}, xz.options());
   }
   if ((need_dgamma || need_dbeta) && M > 0) {
-    const int64_t sms = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
-    const int64_t chunks = std::clamp<int64_t>((M + 255) / 256, 1, 4 * sms);
+    const int64_t chunks = bwd_param_chunks(M, N);
     at::Tensor dg_part = at::empty({chunks, N}, acc);
     at::Tensor db_part = need_dbeta ? at::empty({chunks, N}, acc) : at::Tensor();
     norm_bwd_param_partials_cuda_launch(/*rms=*/false, dy2d, xz2d, mean1d, rstd1d, dg_part,
                                         db_part);
-    if (need_dgamma) dgamma = dg_part.sum(0).to(xz.scalar_type());
-    if (need_dbeta) dbeta = db_part.sum(0).to(xz.scalar_type());
+    if (need_dgamma) dgamma = at::empty({N}, xz.options());
+    if (need_dbeta) dbeta = at::empty({N}, xz.options());
+    at::Tensor dg_out = need_dgamma ? dgamma : at::Tensor();
+    at::Tensor db_out = need_dbeta ? dbeta : at::Tensor();
+    norm_bwd_param_finalize_cuda_launch(dg_part, db_part, dg_out, db_out);
   }
   return {dx, dgamma, dbeta};
 }
@@ -379,13 +396,14 @@ std::tuple<at::Tensor, at::Tensor> rmsnorm_bwd(const at::Tensor& dy,
     dgamma = at::zeros({N}, xz.options());
   }
   if (need_dgamma && M > 0) {
-    const int64_t sms = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
-    const int64_t chunks = std::clamp<int64_t>((M + 255) / 256, 1, 4 * sms);
+    const int64_t chunks = bwd_param_chunks(M, N);
     at::Tensor dg_part = at::empty({chunks, N}, acc);
     at::Tensor db_undef;
     norm_bwd_param_partials_cuda_launch(/*rms=*/true, dy2d, xz2d, /*mean=*/undef, rstd1d,
                                         dg_part, db_undef);
-    dgamma = dg_part.sum(0).to(xz.scalar_type());
+    dgamma = at::empty({N}, xz.options());
+    at::Tensor db_out_undef;
+    norm_bwd_param_finalize_cuda_launch(dg_part, db_undef, dgamma, db_out_undef);
   }
   return {dx, dgamma};
 }

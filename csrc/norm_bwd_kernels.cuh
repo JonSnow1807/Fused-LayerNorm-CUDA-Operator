@@ -218,4 +218,136 @@ __global__ void norm_bwd_param_partials_kernel(const scalar_t* __restrict__ dy,
   }
 }
 
+// Vectorised stage 1: block (kPTx, kPTy) = 256 threads; each thread owns kW
+// consecutive columns (one 16-byte Vec of dy and of xz per visited row) with
+// register accumulators, so a warp issues 4 full 128-byte transactions per
+// load where the scalar kernel issued 64 useful bytes. mean/rstd hoist to
+// registers once per row (L1 broadcast serves the warp). The shared reduce
+// runs over y only — 3 levels instead of 5 — with layout s[y][k][x]: x is the
+// fastest index, so lanes touch consecutive words at every k and the tiles
+// are bank-conflict-free without padding.
+constexpr int kPTx = 32;
+constexpr int kPTy = 8;
+
+template <typename scalar_t, typename acc_t, bool kRMS, bool kBeta>
+__global__ void norm_bwd_param_partials_vec_kernel(
+    const scalar_t* __restrict__ dy,
+    const scalar_t* __restrict__ xz,
+    const acc_t* __restrict__ mean,  // null iff kRMS
+    const acc_t* __restrict__ rstd,
+    acc_t* __restrict__ dgamma_partials,  // [chunks, N]
+    acc_t* __restrict__ dbeta_partials,   // [chunks, N] or null
+    int64_t M,
+    int64_t N,
+    int64_t rows_per_chunk) {
+  using V = Vec<scalar_t>;
+  constexpr int kW = kVecWidth<scalar_t>;
+  const int x = threadIdx.x;
+  const int y = threadIdx.y;
+  const int64_t nvec = N / kW;  // this path requires N % kW == 0
+  const int64_t vcol = static_cast<int64_t>(blockIdx.x) * kPTx + x;
+  const int64_t chunk = blockIdx.y;
+  const int64_t row_begin = chunk * rows_per_chunk;
+  const int64_t row_end = row_begin + rows_per_chunk < M ? row_begin + rows_per_chunk : M;
+
+  acc_t dg[kW] = {};
+  acc_t db[kW] = {};
+  if (vcol < nvec) {
+    for (int64_t row = row_begin + y; row < row_end; row += kPTy) {
+      const V dyv = reinterpret_cast<const V*>(dy + row * N)[vcol];
+      const V xzv = reinterpret_cast<const V*>(xz + row * N)[vcol];
+      const acc_t mu = kRMS ? static_cast<acc_t>(0) : mean[row];
+      const acc_t rs = rstd[row];
+#pragma unroll
+      for (int k = 0; k < kW; ++k) {
+        const acc_t d = static_cast<acc_t>(dyv.v[k]);
+        const acc_t xhat = (static_cast<acc_t>(xzv.v[k]) - mu) * rs;
+        dg[k] += d * xhat;
+        if constexpr (kBeta) db[k] += d;
+      }
+    }
+  }
+
+  // kBeta sizes the beta tile so the no-beta instantiations don't pay shared
+  // memory for a buffer they never touch.
+  __shared__ acc_t s_dg[kPTy][kW][kPTx];
+  __shared__ acc_t s_db[kBeta ? kPTy : 1][kBeta ? kW : 1][kPTx];
+#pragma unroll
+  for (int k = 0; k < kW; ++k) s_dg[y][k][x] = dg[k];
+  if constexpr (kBeta) {
+#pragma unroll
+    for (int k = 0; k < kW; ++k) s_db[y][k][x] = db[k];
+  }
+  __syncthreads();
+  for (int offset = kPTy / 2; offset > 0; offset /= 2) {
+    if (y < offset) {
+#pragma unroll
+      for (int k = 0; k < kW; ++k) {
+        s_dg[y][k][x] += s_dg[y + offset][k][x];
+        if constexpr (kBeta) s_db[y][k][x] += s_db[y + offset][k][x];
+      }
+    }
+    __syncthreads();
+  }
+
+  if (y == 0 && vcol < nvec) {
+#pragma unroll
+    for (int k = 0; k < kW; ++k) {
+      dgamma_partials[chunk * N + vcol * kW + k] = s_dg[0][k][x];
+      if constexpr (kBeta) dbeta_partials[chunk * N + vcol * kW + k] = s_db[0][k][x];
+    }
+  }
+}
+
+// Stage 2: one launch finalises both parameter grads. Block (kFTx, kFTy):
+// each x-lane owns a column; the kFTy y-threads split the chunk axis in a
+// fixed strided pattern and a fixed 3-level shared tree combines them — the
+// order is a pure function of the shapes, so the result stays bitwise
+// run-to-run deterministic. The y-split matters: N alone is only ~N threads
+// of parallelism (a 4-block grid at N=1024 left the kernel latency-bound at
+// ~10 us); splitting chunks across y turns it into ~2 us. Replaces aten's
+// partials.sum(0).to(dtype) x2 (up to four launches plus two temporaries).
+constexpr int kFTx = 32;
+constexpr int kFTy = 8;
+
+template <typename scalar_t, typename acc_t>
+__global__ void norm_bwd_param_finalize_kernel(
+    const acc_t* __restrict__ dgamma_partials,  // [chunks, N] (always present)
+    const acc_t* __restrict__ dbeta_partials,   // null when beta absent/unrequested
+    scalar_t* __restrict__ dgamma,              // null when unrequested
+    scalar_t* __restrict__ dbeta,               // null when unrequested
+    int64_t chunks,
+    int64_t N) {
+  const int x = threadIdx.x;
+  const int y = threadIdx.y;
+  const int64_t col = static_cast<int64_t>(blockIdx.x) * kFTx + x;
+
+  acc_t sg = 0;
+  acc_t sb = 0;
+  if (col < N) {
+    for (int64_t c = y; c < chunks; c += kFTy) {
+      if (dgamma != nullptr) sg += dgamma_partials[c * N + col];
+      if (dbeta != nullptr) sb += dbeta_partials[c * N + col];
+    }
+  }
+
+  __shared__ acc_t s_g[kFTy][kFTx];
+  __shared__ acc_t s_b[kFTy][kFTx];
+  s_g[y][x] = sg;
+  s_b[y][x] = sb;
+  __syncthreads();
+  for (int offset = kFTy / 2; offset > 0; offset /= 2) {
+    if (y < offset) {
+      s_g[y][x] += s_g[y + offset][x];
+      s_b[y][x] += s_b[y + offset][x];
+    }
+    __syncthreads();
+  }
+
+  if (y == 0 && col < N) {
+    if (dgamma != nullptr) dgamma[col] = static_cast<scalar_t>(s_g[0][x]);
+    if (dbeta != nullptr) dbeta[col] = static_cast<scalar_t>(s_b[0][x]);
+  }
+}
+
 }  // namespace fused_norm

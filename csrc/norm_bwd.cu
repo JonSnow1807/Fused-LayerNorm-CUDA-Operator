@@ -95,10 +95,6 @@ void norm_bwd_param_partials_cuda_launch(bool rms,
 
   c10::cuda::CUDAGuard device_guard(xz2d.device());
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  constexpr int kTile = fused_norm::kBwdTile;
-  const dim3 grid(static_cast<unsigned int>((N + kTile - 1) / kTile),
-                  static_cast<unsigned int>(num_chunks));
-  const dim3 block(kTile, kTile);
 
   AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half, at::ScalarType::BFloat16, xz2d.scalar_type(), "norm_bwd_params", [&] {
@@ -110,11 +106,37 @@ void norm_bwd_param_partials_cuda_launch(bool rms,
         acc_t* dgp = dgamma_partials.data_ptr<acc_t>();
         acc_t* dbp =
             has_beta ? dbeta_partials_or_undef.data_ptr<acc_t>() : nullptr;
+
+        // Own eligibility rule (this is a column-tiled grid, so choose_vec's
+        // M-floor for block-per-row grids does not apply): vectorisable
+        // layout and at least one full block width of columns.
+        constexpr int kW = fused_norm::kVecWidth<scalar_t>;
+        const bool vectorisable =
+            (N % kW == 0) && fused_norm::aligned16(dyp) && fused_norm::aligned16(xzp);
+        const bool vec = fused_norm::apply_force_kernel_env(
+            vectorisable && N >= fused_norm::kPTx * kW, vectorisable);
+
         auto launch = [&](auto rms_tag, auto beta_tag) {
-          fused_norm::norm_bwd_param_partials_kernel<scalar_t, acc_t, decltype(rms_tag)::value,
-                                                     decltype(beta_tag)::value>
-              <<<grid, block, 0, stream>>>(dyp, xzp, meanp, rstdp, dgp, dbp, M, N,
-                                           rows_per_chunk);
+          constexpr bool kRMS = decltype(rms_tag)::value;
+          constexpr bool kBeta = decltype(beta_tag)::value;
+          if (vec) {
+            const int64_t nvec = N / kW;
+            const dim3 grid(
+                static_cast<unsigned int>((nvec + fused_norm::kPTx - 1) / fused_norm::kPTx),
+                static_cast<unsigned int>(num_chunks));
+            const dim3 block(fused_norm::kPTx, fused_norm::kPTy);
+            fused_norm::norm_bwd_param_partials_vec_kernel<scalar_t, acc_t, kRMS, kBeta>
+                <<<grid, block, 0, stream>>>(dyp, xzp, meanp, rstdp, dgp, dbp, M, N,
+                                             rows_per_chunk);
+          } else {
+            constexpr int kTile = fused_norm::kBwdTile;
+            const dim3 grid(static_cast<unsigned int>((N + kTile - 1) / kTile),
+                            static_cast<unsigned int>(num_chunks));
+            const dim3 block(kTile, kTile);
+            fused_norm::norm_bwd_param_partials_kernel<scalar_t, acc_t, kRMS, kBeta>
+                <<<grid, block, 0, stream>>>(dyp, xzp, meanp, rstdp, dgp, dbp, M, N,
+                                             rows_per_chunk);
+          }
         };
         if (rms) {
           launch(std::true_type{}, std::false_type{});
@@ -123,6 +145,42 @@ void norm_bwd_param_partials_cuda_launch(bool rms,
         } else {
           launch(std::false_type{}, std::false_type{});
         }
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+      });
+}
+
+void norm_bwd_param_finalize_cuda_launch(const at::Tensor& dgamma_partials,
+                                         const at::Tensor& dbeta_partials_or_undef,
+                                         at::Tensor& dgamma_or_undef,
+                                         at::Tensor& dbeta_or_undef) {
+  const int64_t chunks = dgamma_partials.size(0);
+  const int64_t N = dgamma_partials.size(1);
+  if (N == 0) return;
+  TORCH_CHECK(dgamma_or_undef.defined() || dbeta_or_undef.defined(),
+              "finalize called with no requested output");
+  const at::Tensor& out_for_dtype =
+      dgamma_or_undef.defined() ? dgamma_or_undef : dbeta_or_undef;
+
+  c10::cuda::CUDAGuard device_guard(dgamma_partials.device());
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  const dim3 grid(
+      static_cast<unsigned int>((N + fused_norm::kFTx - 1) / fused_norm::kFTx));
+  const dim3 blockdim(fused_norm::kFTx, fused_norm::kFTy);
+
+  AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half, at::ScalarType::BFloat16, out_for_dtype.scalar_type(),
+      "norm_bwd_param_finalize", [&] {
+        using acc_t = at::acc_type<scalar_t, /*is_cuda=*/true>;
+        const acc_t* dgp = dgamma_partials.data_ptr<acc_t>();
+        const acc_t* dbp = dbeta_partials_or_undef.defined()
+                               ? dbeta_partials_or_undef.data_ptr<acc_t>()
+                               : nullptr;
+        scalar_t* dg_out =
+            dgamma_or_undef.defined() ? dgamma_or_undef.data_ptr<scalar_t>() : nullptr;
+        scalar_t* db_out =
+            dbeta_or_undef.defined() ? dbeta_or_undef.data_ptr<scalar_t>() : nullptr;
+        fused_norm::norm_bwd_param_finalize_kernel<scalar_t, acc_t>
+            <<<grid, blockdim, 0, stream>>>(dgp, dbp, dg_out, db_out, chunks, N);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
 }

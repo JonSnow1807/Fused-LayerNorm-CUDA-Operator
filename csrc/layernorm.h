@@ -120,8 +120,8 @@ void norm_bwd_dx_cuda_launch(bool rms,
 
 // Stage 1 of the deterministic two-stage parameter gradients: fixed-chunk
 // fp32 partials of shape [num_chunks, N] (dgamma_partials.size(0) chooses the
-// chunk count); stage 2 is partials.sum(0) in the bindings. No atomics: grads
-// are bitwise run-to-run reproducible.
+// chunk count); stage 2 is norm_bwd_param_finalize_cuda_launch. No atomics:
+// grads are bitwise run-to-run reproducible.
 void norm_bwd_param_partials_cuda_launch(bool rms,
                                          const at::Tensor& dy2d,
                                          const at::Tensor& xz2d,
@@ -129,3 +129,13 @@ void norm_bwd_param_partials_cuda_launch(bool rms,
                                          const at::Tensor& rstd,
                                          at::Tensor& dgamma_partials,
                                          at::Tensor& dbeta_partials_or_undef);
+
+// Stage 2: sums each requested [chunks, N] partials tensor over chunks in
+// fixed ascending order and casts into the (pre-allocated, param-dtype)
+// outputs — both parameters in a single launch, bitwise deterministic. At
+// least one of dgamma/dbeta must be defined; an undefined output (or an
+// undefined dbeta_partials) is skipped.
+void norm_bwd_param_finalize_cuda_launch(const at::Tensor& dgamma_partials,
+                                         const at::Tensor& dbeta_partials_or_undef,
+                                         at::Tensor& dgamma_or_undef,
+                                         at::Tensor& dbeta_or_undef);
