@@ -243,3 +243,141 @@ def test_compiled_backward() -> None:
     dx_c, dw_c = torch.autograd.grad(loss_c, (x, w))
     torch.testing.assert_close(dx_c, dx_e)
     torch.testing.assert_close(dw_c, dw_e)
+
+
+# --------------------------------------------------------------------------- #
+# v0.5.0: vectorized-backward coverage, chunk-policy determinism, GELU bwd.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+def test_backward_odd_n_large_m_and_misaligned() -> None:
+    """The scalar backward path stays load-bearing in default mode: odd N at
+    large M (vec ineligible), and a 16-byte-misaligned cotangent/input slice
+    (contiguous but storage-offset) must fall back correctly, not crash."""
+    x = _randn((4096, 1023), torch.float16).requires_grad_()
+    w, _ = _affine(1023, torch.float16)
+    w.requires_grad_()
+    gy = torch.randn(4096, 1023, device=x.device, dtype=torch.float16)
+    y = rms_norm(x, (1023,), w, 1e-6)
+    dx, dw = torch.autograd.grad(y, (x, w), gy)
+    xr = x.detach().float().requires_grad_()
+    wr = w.detach().float().requires_grad_()
+    yr = F.rms_norm(xr, (1023,), wr, 1e-6)
+    dxr, dwr = torch.autograd.grad(yr, (xr, wr), gy.float())
+    torch.testing.assert_close(dx.float(), dxr, **GRAD_TOL[torch.float16])
+    torch.testing.assert_close(dw.float(), dwr, **GRAD_TOL[torch.float16])
+
+    # misaligned: base[1:] keeps a storage offset ⇒ data_ptr not 16B-aligned
+    base = torch.randn(512 * 1024 + 1, device=x.device)
+    xm = base[1:].view(512, 1024).requires_grad_()
+    assert xm.data_ptr() % 16 != 0
+    y = rms_norm(xm, (1024,), None, 1e-6)
+    (dxm,) = torch.autograd.grad(y.sum(), (xm,))
+    xr = xm.detach().clone().requires_grad_()
+    (dxr,) = torch.autograd.grad(F.rms_norm(xr, (1024,), None, 1e-6).sum(), (xr,))
+    torch.testing.assert_close(dxm, dxr, **GRAD_TOL[torch.float32])
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+@pytest.mark.parametrize("shape", [(512, 1024), (4096, 1024)],
+                         ids=lambda s: "x".join(map(str, s)))
+def test_param_grads_bitwise_deterministic_rms(shape) -> None:
+    """RMS variant of the determinism contract, including the small-M shape
+    where the GPU-filling chunk policy chooses a different chunk count."""
+    x = _randn(shape, torch.float32).requires_grad_()
+    w, _ = _affine(shape[-1], torch.float32)
+    w.requires_grad_()
+    gy = torch.randn(*shape, device=x.device)
+
+    def grads():
+        return torch.autograd.grad(rms_norm(x, (shape[-1],), w, 1e-6), (x, w), gy)
+
+    dx1, dw1 = grads()
+    dx2, dw2 = grads()
+    assert torch.equal(dw1, dw2) and torch.equal(dx1, dx2)
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+def test_partial_param_grads_through_finalize() -> None:
+    """dgamma-only and dbeta-only requests exercise the single-launch
+    finalize kernel's null-output legs."""
+    x = _randn((64, 256), torch.float32)
+    w, b = _affine(256, torch.float32)
+    # dbeta only
+    bg = b.clone().requires_grad_()
+    (db,) = torch.autograd.grad(layer_norm(x, (256,), w, bg, 1e-5).sum(), (bg,))
+    xr = x.clone()
+    br = b.clone().requires_grad_()
+    (dbr,) = torch.autograd.grad(F.layer_norm(xr, (256,), w, br, 1e-5).sum(), (br,))
+    torch.testing.assert_close(db, dbr, **GRAD_TOL[torch.float32])
+    # dgamma only
+    wg = w.clone().requires_grad_()
+    (dw,) = torch.autograd.grad(layer_norm(x, (256,), wg, b, 1e-5).sum(), (wg,))
+    wr = w.clone().requires_grad_()
+    (dwr,) = torch.autograd.grad(F.layer_norm(x, (256,), wr, b, 1e-5).sum(), (wr,))
+    torch.testing.assert_close(dw, dwr, **GRAD_TOL[torch.float32])
+
+
+# --------------------------------------------------------------------------- #
+# GELU backward (v0.5.0): layer_norm_gelu no longer falls back under grad.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+@pytest.mark.parametrize("approximate", ["none", "tanh"])
+@pytest.mark.parametrize("shape", [(3, 17), (2, 5, 32)], ids=lambda s: "x".join(map(str, s)))
+def test_gradcheck_layer_norm_gelu(shape, approximate: str) -> None:
+    from fused_layernorm import layer_norm_gelu
+
+    n = shape[-1]
+    x = torch.randn(*shape, device="cuda", dtype=torch.float64, requires_grad=True)
+    w = (torch.rand(n, device="cuda", dtype=torch.float64) + 0.5).requires_grad_()
+    b = torch.randn(n, device="cuda", dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(
+        lambda x, w, b: layer_norm_gelu(x, (n,), w, b, 1e-5, approximate=approximate),
+        (x, w, b), eps=1e-6, atol=1e-5,
+    )
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+@pytest.mark.parametrize("approximate", ["none", "tanh"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16], ids=str)
+def test_layer_norm_gelu_grads_match_composite(dtype, approximate: str) -> None:
+    from fused_layernorm import layer_norm_gelu
+
+    x, _, w, b = _grad_inputs((64, 1024), dtype, residual=False)
+    gy = torch.randn(64, 1024, device=x.device, dtype=dtype)
+    y = layer_norm_gelu(x, (1024,), w, b, 1e-5, approximate=approximate)
+    assert y.grad_fn is not None  # fused train path, not the eager fallback
+    dx, dw, db = torch.autograd.grad(y, (x, w, b), gy)
+    xr = x.detach().float().requires_grad_()
+    wr = w.detach().float().requires_grad_()
+    br = b.detach().float().requires_grad_()
+    yr = F.gelu(F.layer_norm(xr, (1024,), wr, br, 1e-5), approximate=approximate)
+    dxr, dwr, dbr = torch.autograd.grad(yr, (xr, wr, br), gy.float())
+    torch.testing.assert_close(dx.float(), dxr, **GRAD_TOL[dtype])
+    torch.testing.assert_close(dw.float(), dwr, **GRAD_TOL[dtype])
+    torch.testing.assert_close(db.float(), dbr, **GRAD_TOL[dtype])
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+def test_layer_norm_gelu_param_grads_deterministic() -> None:
+    from fused_layernorm import layer_norm_gelu
+
+    x, _, w, b = _grad_inputs((512, 1024), torch.float32, residual=False)
+    gy = torch.randn(512, 1024, device=x.device)
+
+    def grads():
+        y = layer_norm_gelu(x, (1024,), w, b, 1e-5, approximate="tanh")
+        return torch.autograd.grad(y, (x, w, b), gy)
+
+    dx1, dw1, db1 = grads()
+    dx2, dw2, db2 = grads()
+    assert torch.equal(dw1, dw2) and torch.equal(db1, db2) and torch.equal(dx1, dx2)

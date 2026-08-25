@@ -38,6 +38,8 @@
 
 #include "layernorm.h"
 
+using fused_norm::NormEpilogue;
+
 namespace {
 
 // Validates an optional affine parameter against the input. Returns an undefined tensor when
@@ -214,11 +216,16 @@ std::vector<int64_t> leading_sizes(const at::Tensor& input) {
 
 // Training forwards: like the inference entry points but also return the
 // per-row statistics autograd saves (acc dtype: fp32, or fp64 for double).
+// activation: 0 = none, 1 = GELU (erf), 2 = GELU (tanh approximation) —
+// applied to the normalised+affine value in acc precision before the cast.
 std::tuple<at::Tensor, at::Tensor, at::Tensor> layernorm_fwd_train(
     const at::Tensor& input,
     const std::optional<at::Tensor>& weight,
     const std::optional<at::Tensor>& bias,
-    double eps) {
+    double eps,
+    int64_t activation) {
+  TORCH_CHECK(activation >= 0 && activation <= 2, "activation must be 0, 1 or 2, got ",
+              activation);
   TORCH_CHECK(input.is_cuda(), "input must be a CUDA tensor, but it is on ", input.device());
   TORCH_CHECK(input.dim() >= 1, "input must have rank >= 1");
   const auto st = input.scalar_type();
@@ -239,7 +246,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> layernorm_fwd_train(
   at::Tensor y2d = at::empty_like(x2d);
   at::Tensor mean = at::empty({M}, acc);
   at::Tensor rstd = at::empty({M}, acc);
-  layernorm_fwd_train_cuda_launch(x2d, w, b, y2d, mean, rstd, eps);
+  layernorm_fwd_train_cuda_launch(x2d, w, b, y2d, mean, rstd, eps,
+                                  static_cast<NormEpilogue>(activation));
   return {y2d.view(input.sizes()), mean.view(leading_sizes(input)),
           rstd.view(leading_sizes(input))};
 }
@@ -323,10 +331,16 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> layernorm_bwd(
     const std::optional<at::Tensor>& dz_extra,
     bool need_dx,
     bool need_dgamma,
-    bool need_dbeta) {
+    bool need_dbeta,
+    const std::optional<at::Tensor>& bias,
+    int64_t activation) {
+  TORCH_CHECK(activation >= 0 && activation <= 2, "activation must be 0, 1 or 2, got ",
+              activation);
+  const auto act = static_cast<NormEpilogue>(activation);
   const int64_t N = xz.size(-1);
   const int64_t M = xz.numel() == 0 ? 0 : xz.numel() / N;
   const at::Tensor w = check_affine(weight, "weight", xz, N);
+  const at::Tensor bias_t = check_affine(bias, "bias", xz, N);
   const at::Tensor xz2d = xz.contiguous().view({M, N});
   const at::Tensor dy2d = dy.contiguous().view({M, N});
   const at::Tensor mean1d = mean.contiguous().view({M});
@@ -340,7 +354,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> layernorm_bwd(
   at::Tensor dx = at::empty({0}, xz.options());
   if (need_dx) {
     at::Tensor dx2d = at::empty_like(xz2d);
-    norm_bwd_dx_cuda_launch(/*rms=*/false, dy2d, dz2d, xz2d, mean1d, rstd1d, w, dx2d);
+    norm_bwd_dx_cuda_launch(/*rms=*/false, dy2d, dz2d, xz2d, mean1d, rstd1d, w, bias_t, dx2d,
+                            act);
     dx = dx2d.view(xz.sizes());
   }
 
@@ -355,8 +370,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> layernorm_bwd(
     const int64_t chunks = bwd_param_chunks(M, N);
     at::Tensor dg_part = at::empty({chunks, N}, acc);
     at::Tensor db_part = need_dbeta ? at::empty({chunks, N}, acc) : at::Tensor();
-    norm_bwd_param_partials_cuda_launch(/*rms=*/false, dy2d, xz2d, mean1d, rstd1d, dg_part,
-                                        db_part);
+    norm_bwd_param_partials_cuda_launch(/*rms=*/false, dy2d, xz2d, mean1d, rstd1d, w, bias_t,
+                                        dg_part, db_part, act);
     if (need_dgamma) dgamma = at::empty({N}, xz.options());
     if (need_dbeta) dbeta = at::empty({N}, xz.options());
     at::Tensor dg_out = need_dgamma ? dgamma : at::Tensor();
@@ -387,7 +402,8 @@ std::tuple<at::Tensor, at::Tensor> rmsnorm_bwd(const at::Tensor& dy,
   at::Tensor dx = at::empty({0}, xz.options());
   if (need_dx) {
     at::Tensor dx2d = at::empty_like(xz2d);
-    norm_bwd_dx_cuda_launch(/*rms=*/true, dy2d, dz2d, xz2d, /*mean=*/undef, rstd1d, w, dx2d);
+    norm_bwd_dx_cuda_launch(/*rms=*/true, dy2d, dz2d, xz2d, /*mean=*/undef, rstd1d, w,
+                            /*bias=*/undef, dx2d, NormEpilogue::kNone);
     dx = dx2d.view(xz.sizes());
   }
 
@@ -399,8 +415,9 @@ std::tuple<at::Tensor, at::Tensor> rmsnorm_bwd(const at::Tensor& dy,
     const int64_t chunks = bwd_param_chunks(M, N);
     at::Tensor dg_part = at::empty({chunks, N}, acc);
     at::Tensor db_undef;
-    norm_bwd_param_partials_cuda_launch(/*rms=*/true, dy2d, xz2d, /*mean=*/undef, rstd1d,
-                                        dg_part, db_undef);
+    norm_bwd_param_partials_cuda_launch(/*rms=*/true, dy2d, xz2d, /*mean=*/undef, rstd1d, w,
+                                        /*bias=*/undef, dg_part, db_undef,
+                                        NormEpilogue::kNone);
     dgamma = at::empty({N}, xz.options());
     at::Tensor db_out_undef;
     norm_bwd_param_finalize_cuda_launch(dg_part, db_undef, dgamma, db_out_undef);
@@ -634,9 +651,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
   m.def("layernorm_fwd_train", &layernorm_fwd_train,
         "LayerNorm forward that also returns (mean, rstd) per row (acc dtype) for autograd.\n"
-        "Output is bitwise identical to layernorm().",
+        "Output is bitwise identical to layernorm(). activation: 0 none, 1 GELU (erf),\n"
+        "2 GELU (tanh) - applied in acc precision before the cast.",
         py::arg("input"), py::arg("weight") = py::none(), py::arg("bias") = py::none(),
-        py::arg("eps") = 1e-5);
+        py::arg("eps") = 1e-5, py::arg("activation") = 0);
 
   m.def("rmsnorm_fwd_train", &rmsnorm_fwd_train,
         "RMSNorm forward that also returns rstd per row (acc dtype) for autograd.",
@@ -658,7 +676,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "Parameter grads use a deterministic two-stage reduction (bitwise reproducible).",
         py::arg("dy"), py::arg("xz"), py::arg("mean"), py::arg("rstd"),
         py::arg("weight") = py::none(), py::arg("dz_extra") = py::none(),
-        py::arg("need_dx") = true, py::arg("need_dgamma") = true, py::arg("need_dbeta") = true);
+        py::arg("need_dx") = true, py::arg("need_dgamma") = true, py::arg("need_dbeta") = true,
+        py::arg("bias") = py::none(), py::arg("activation") = 0);
 
   m.def("rmsnorm_bwd", &rmsnorm_bwd,
         "RMSNorm backward: returns (dx, dgamma); same conventions as layernorm_bwd.",

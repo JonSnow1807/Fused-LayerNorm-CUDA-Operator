@@ -120,4 +120,82 @@ __device__ __forceinline__ acc_t gelu_tanh(acc_t x) {
   return static_cast<acc_t>(0.5) * x * (static_cast<acc_t>(1) + tanh(inner));
 }
 
+// GELU derivatives, matching the constants above; unqualified erf/exp/tanh so
+// the double overloads resolve for acc_t = double (gradcheck).
+//   d/dx [0.5 x (1 + erf(x/sqrt(2)))] = 0.5 (1 + erf(x/sqrt(2)))
+//                                       + x * exp(-x^2/2) / sqrt(2*pi)
+template <typename acc_t>
+__device__ __forceinline__ acc_t dgelu_erf(acc_t x) {
+  const acc_t kInvSqrt2 = static_cast<acc_t>(0.70710678118654752440);
+  const acc_t kInvSqrt2Pi = static_cast<acc_t>(0.39894228040143267794);  // 1/sqrt(2*pi)
+  return static_cast<acc_t>(0.5) * (static_cast<acc_t>(1) + erf(x * kInvSqrt2)) +
+         x * exp(static_cast<acc_t>(-0.5) * x * x) * kInvSqrt2Pi;
+}
+
+//   y = 0.5 x (1 + tanh u), u = beta (x + kappa x^3)
+//   dy/dx = 0.5 (1 + tanh u) + 0.5 x sech^2(u) * beta (1 + 3 kappa x^2)
+template <typename acc_t>
+__device__ __forceinline__ acc_t dgelu_tanh(acc_t x) {
+  const acc_t kBeta = static_cast<acc_t>(0.79788456080286535588);
+  const acc_t kKappa = static_cast<acc_t>(0.044715);
+  const acc_t x2 = x * x;
+  const acc_t t = tanh(kBeta * (x + kKappa * x * x2));
+  return static_cast<acc_t>(0.5) * (static_cast<acc_t>(1) + t) +
+         static_cast<acc_t>(0.5) * x * (static_cast<acc_t>(1) - t * t) * kBeta *
+             (static_cast<acc_t>(1) + static_cast<acc_t>(3) * kKappa * x2);
+}
+
+// Backward cotangent transforms for the dx/partials kernels. y = act(h) with
+// h = xhat*gamma + beta: the whole backward is the plain-norm backward with
+// dy replaced by dh = apply(dy, h). kNeedsH=false skips the h recompute (and
+// the beta load) entirely, so the DGradNone instantiations compile to the
+// plain-norm kernels.
+struct DGradNone {
+  static constexpr bool kNeedsH = false;
+  template <typename acc_t>
+  __device__ __forceinline__ acc_t apply(acc_t dy, acc_t /*h*/) const {
+    return dy;
+  }
+};
+
+struct DGradGeluErf {
+  static constexpr bool kNeedsH = true;
+  template <typename acc_t>
+  __device__ __forceinline__ acc_t apply(acc_t dy, acc_t h) const {
+    return dy * dgelu_erf(h);
+  }
+};
+
+struct DGradGeluTanh {
+  static constexpr bool kNeedsH = true;
+  template <typename acc_t>
+  __device__ __forceinline__ acc_t apply(acc_t dy, acc_t h) const {
+    return dy * dgelu_tanh(h);
+  }
+};
+
+// Forward GELU epilogues for the generic train kernel (norm_fwd_kernels.cuh):
+// same functor shape as EpiNone, applying the activation to the acc-precision
+// normalised+affine value before the cast (matching the v0.3.0 inference
+// kernels' order of operations).
+template <typename scalar_t, typename acc_t>
+struct EpiGeluErf {
+  using out_t = scalar_t;
+  static constexpr bool kNeedsRowMax = false;
+  __device__ __forceinline__ float load_inv_scale() const { return 1.f; }
+  __device__ __forceinline__ out_t store(acc_t v, float /*inv_scale*/) const {
+    return static_cast<out_t>(gelu_erf(v));
+  }
+};
+
+template <typename scalar_t, typename acc_t>
+struct EpiGeluTanh {
+  using out_t = scalar_t;
+  static constexpr bool kNeedsRowMax = false;
+  __device__ __forceinline__ float load_inv_scale() const { return 1.f; }
+  __device__ __forceinline__ out_t store(acc_t v, float /*inv_scale*/) const {
+    return static_cast<out_t>(gelu_tanh(v));
+  }
+};
+
 }  // namespace fused_norm

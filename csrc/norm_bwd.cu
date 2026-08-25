@@ -17,6 +17,8 @@
 #include "norm_bwd_kernels.cuh"
 #include "norm_dispatch.cuh"
 
+using fused_norm::NormEpilogue;
+
 void norm_bwd_dx_cuda_launch(bool rms,
                              const at::Tensor& dy2d,
                              const at::Tensor& dz_extra2d_or_undef,
@@ -24,12 +26,22 @@ void norm_bwd_dx_cuda_launch(bool rms,
                              const at::Tensor& mean_or_undef,
                              const at::Tensor& rstd,
                              const at::Tensor& weight_or_undef,
-                             at::Tensor& dx2d) {
+                             const at::Tensor& bias_or_undef,
+                             at::Tensor& dx2d,
+                             NormEpilogue act) {
   const int64_t M = xz2d.size(0);
   const int64_t N = xz2d.size(1);
   if (M == 0 || N == 0) return;
   TORCH_CHECK(M <= 0x7fffffffLL, "norm backward: too many rows (", M, ")");
   TORCH_CHECK(rms == !mean_or_undef.defined(), "mean must be given iff LayerNorm");
+  if (act != NormEpilogue::kNone) {
+    TORCH_CHECK(!rms, "fused activation backward is LayerNorm-only");
+    TORCH_CHECK(act == NormEpilogue::kGeluErf || act == NormEpilogue::kGeluTanh,
+                "unsupported activation in norm backward");
+    norm_bwd_dx_gelu_cuda(act == NormEpilogue::kGeluTanh, dy2d, dz_extra2d_or_undef, xz2d,
+                          mean_or_undef, rstd, weight_or_undef, bias_or_undef, dx2d);
+    return;
+  }
 
   c10::cuda::CUDAGuard device_guard(xz2d.device());
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
@@ -63,10 +75,12 @@ void norm_bwd_dx_cuda_launch(bool rms,
           constexpr bool kRMS = decltype(rms_tag)::value;
           if (vec) {
             fused_norm::norm_bwd_dx_vec_kernel<scalar_t, acc_t, kRMS>
-                <<<grid, block, 0, stream>>>(dyp, dzp, xzp, meanp, rstdp, g, dxp, N);
+                <<<grid, block, 0, stream>>>(dyp, dzp, xzp, meanp, rstdp, g,
+                                             /*beta=*/nullptr, dxp, N);
           } else {
             fused_norm::norm_bwd_dx_kernel<scalar_t, acc_t, kRMS>
-                <<<grid, block, 0, stream>>>(dyp, dzp, xzp, meanp, rstdp, g, dxp, N);
+                <<<grid, block, 0, stream>>>(dyp, dzp, xzp, meanp, rstdp, g,
+                                             /*beta=*/nullptr, dxp, N);
           }
         };
         if (rms) {
@@ -83,12 +97,24 @@ void norm_bwd_param_partials_cuda_launch(bool rms,
                                          const at::Tensor& xz2d,
                                          const at::Tensor& mean_or_undef,
                                          const at::Tensor& rstd,
+                                         const at::Tensor& weight_or_undef,
+                                         const at::Tensor& bias_or_undef,
                                          at::Tensor& dgamma_partials,
-                                         at::Tensor& dbeta_partials_or_undef) {
+                                         at::Tensor& dbeta_partials_or_undef,
+                                         NormEpilogue act) {
   const int64_t M = xz2d.size(0);
   const int64_t N = xz2d.size(1);
   if (M == 0 || N == 0) return;
   TORCH_CHECK(rms == !mean_or_undef.defined(), "mean must be given iff LayerNorm");
+  if (act != NormEpilogue::kNone) {
+    TORCH_CHECK(!rms, "fused activation backward is LayerNorm-only");
+    TORCH_CHECK(act == NormEpilogue::kGeluErf || act == NormEpilogue::kGeluTanh,
+                "unsupported activation in norm backward");
+    norm_bwd_param_partials_gelu_cuda(act == NormEpilogue::kGeluTanh, dy2d, xz2d,
+                                      mean_or_undef, rstd, weight_or_undef, bias_or_undef,
+                                      dgamma_partials, dbeta_partials_or_undef);
+    return;
+  }
   const int64_t num_chunks = dgamma_partials.size(0);
   const int64_t rows_per_chunk = (M + num_chunks - 1) / num_chunks;
   const bool has_beta = dbeta_partials_or_undef.defined();
@@ -126,7 +152,8 @@ void norm_bwd_param_partials_cuda_launch(bool rms,
                 static_cast<unsigned int>(num_chunks));
             const dim3 block(fused_norm::kPTx, fused_norm::kPTy);
             fused_norm::norm_bwd_param_partials_vec_kernel<scalar_t, acc_t, kRMS, kBeta>
-                <<<grid, block, 0, stream>>>(dyp, xzp, meanp, rstdp, dgp, dbp, M, N,
+                <<<grid, block, 0, stream>>>(dyp, xzp, meanp, rstdp, /*gamma=*/nullptr,
+                                             /*beta=*/nullptr, dgp, dbp, M, N,
                                              rows_per_chunk);
           } else {
             constexpr int kTile = fused_norm::kBwdTile;
@@ -134,7 +161,8 @@ void norm_bwd_param_partials_cuda_launch(bool rms,
                             static_cast<unsigned int>(num_chunks));
             const dim3 block(kTile, kTile);
             fused_norm::norm_bwd_param_partials_kernel<scalar_t, acc_t, kRMS, kBeta>
-                <<<grid, block, 0, stream>>>(dyp, xzp, meanp, rstdp, dgp, dbp, M, N,
+                <<<grid, block, 0, stream>>>(dyp, xzp, meanp, rstdp, /*gamma=*/nullptr,
+                                             /*beta=*/nullptr, dgp, dbp, M, N,
                                              rows_per_chunk);
           }
         };

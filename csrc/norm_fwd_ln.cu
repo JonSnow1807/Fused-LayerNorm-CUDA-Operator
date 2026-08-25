@@ -32,7 +32,10 @@
 
 namespace {
 
+using fused_norm::EpiGeluErf;
+using fused_norm::EpiGeluTanh;
 using fused_norm::EpiNone;
+using fused_norm::NormEpilogue;
 
 }  // namespace
 
@@ -42,7 +45,11 @@ void layernorm_fwd_train_cuda_launch(const at::Tensor& input2d,
                                      at::Tensor& output2d,
                                      at::Tensor& mean2d,
                                      at::Tensor& rstd2d,
-                                     double eps) {
+                                     double eps,
+                                     fused_norm::NormEpilogue epi_kind) {
+  TORCH_CHECK(epi_kind == NormEpilogue::kNone || epi_kind == NormEpilogue::kGeluErf ||
+                  epi_kind == NormEpilogue::kGeluTanh,
+              "layer_norm_fwd_train: unsupported epilogue");
   const int64_t M = input2d.size(0);
   const int64_t N = input2d.size(1);
   if (M == 0 || N == 0) return;
@@ -77,16 +84,25 @@ void layernorm_fwd_train_cuda_launch(const at::Tensor& input2d,
         acc_t* mean = mean2d.data_ptr<acc_t>();
         acc_t* rstd = rstd2d.data_ptr<acc_t>();
         const acc_t eps_acc = static_cast<acc_t>(eps);
-        const EpiNone<scalar_t, acc_t> epi{};
 
-        if (vec) {
-          fused_norm::norm_fwd_vec_kernel<scalar_t, acc_t, /*kRMS=*/false, /*kFusedAdd=*/false>
-              <<<grid, block, 0, stream>>>(x, nullptr, nullptr, y, g, b, mean, rstd, N,
-                                           eps_acc, epi);
+        auto launch = [&](auto epi) {
+          if (vec) {
+            fused_norm::norm_fwd_vec_kernel<scalar_t, acc_t, /*kRMS=*/false,
+                                            /*kFusedAdd=*/false>
+                <<<grid, block, 0, stream>>>(x, nullptr, nullptr, y, g, b, mean, rstd, N,
+                                             eps_acc, epi);
+          } else {
+            fused_norm::norm_fwd_kernel<scalar_t, acc_t, /*kRMS=*/false, /*kFusedAdd=*/false>
+                <<<grid, block, 0, stream>>>(x, nullptr, nullptr, y, g, b, mean, rstd, N,
+                                             eps_acc, epi);
+          }
+        };
+        if (epi_kind == NormEpilogue::kGeluErf) {
+          launch(EpiGeluErf<scalar_t, acc_t>{});
+        } else if (epi_kind == NormEpilogue::kGeluTanh) {
+          launch(EpiGeluTanh<scalar_t, acc_t>{});
         } else {
-          fused_norm::norm_fwd_kernel<scalar_t, acc_t, /*kRMS=*/false, /*kFusedAdd=*/false>
-              <<<grid, block, 0, stream>>>(x, nullptr, nullptr, y, g, b, mean, rstd, N,
-                                           eps_acc, epi);
+          launch(EpiNone<scalar_t, acc_t>{});
         }
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       });

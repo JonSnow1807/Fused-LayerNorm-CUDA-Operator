@@ -157,11 +157,23 @@ def layer_norm_gelu(
 
     ``approximate`` is ``"none"`` (erf GELU, the PyTorch default) or
     ``"tanh"``.  The fused kernel is selected under the same rule as
-    :func:`layer_norm`; otherwise the two PyTorch ops are applied in sequence.
-    Forward-only on the fused path (see :func:`layer_norm`).
+    :func:`layer_norm`.  Since v0.5.0 gradient-requiring eligible calls run
+    the fused fwd-train kernel with a real CUDA backward (the cotangent is
+    transformed by ``gelu'(h)`` in-kernel); every ineligible call is the
+    PyTorch composite.
     """
+    if approximate not in ("none", "tanh"):  # PyTorch's own error, raised eagerly
+        raise RuntimeError(
+            f"approximate argument must be either none or tanh, got {approximate}"
+        )
     shape = _as_shape(normalized_shape)
-    if _use_fused(input, shape, weight, bias):
+    if _eligible(input, shape, weight, bias, ext_available=_ext is not None,
+                 needs_grad_ok=True):
+        if _needs_grad(input, weight, bias):
+            y, _, _ = torch.ops.fused_layernorm.layer_norm_gelu_fwd_train(
+                input, weight, bias, eps, approximate == "tanh"
+            )
+            return y
         if not torch.compiler.is_compiling():
             return _ext.layernorm_gelu(input, weight, bias, eps, approximate)
         return torch.ops.fused_layernorm.layer_norm_gelu(input, weight, bias, eps, approximate)

@@ -33,20 +33,23 @@
 
 #include <cstdint>
 
+#include "norm_epilogue.cuh"  // DGrad* cotangent transforms
 #include "norm_reduce.cuh"
 #include "norm_vec.cuh"
 
 namespace fused_norm {
 
-template <typename scalar_t, typename acc_t, bool kRMS>
+template <typename scalar_t, typename acc_t, bool kRMS, typename DGrad = DGradNone>
 __global__ void norm_bwd_dx_kernel(const scalar_t* __restrict__ dy,
                                    const scalar_t* __restrict__ dz_extra,  // null => 0
                                    const scalar_t* __restrict__ xz,
                                    const acc_t* __restrict__ mean,         // null iff kRMS
                                    const acc_t* __restrict__ rstd,
                                    const scalar_t* __restrict__ gamma,     // null => 1
+                                   const scalar_t* __restrict__ beta,      // read iff DGrad::kNeedsH
                                    scalar_t* __restrict__ dx,
-                                   int64_t N) {
+                                   int64_t N,
+                                   DGrad dgrad = {}) {
   const int64_t row = blockIdx.x;
   const int tid = threadIdx.x;
   const int stride = blockDim.x;
@@ -61,11 +64,20 @@ __global__ void norm_bwd_dx_kernel(const scalar_t* __restrict__ dy,
   __shared__ acc_t s_c1;  // sum(g) / N          (LayerNorm only; 0 for RMS)
   __shared__ acc_t s_c2;  // sum(g * xhat) / N
 
+  // With an activation (kNeedsH) the cotangent transforms per element:
+  // dh = dgrad.apply(dy, h) with h = xhat*gamma + beta, recomputed in both
+  // passes (deterministic: identical inputs and instruction sequence; and
+  // the kernel stays memory-bound). g then means dh*gamma throughout.
   Sum2<acc_t> sums;
   for (int64_t i = tid; i < N; i += stride) {
-    const acc_t g = static_cast<acc_t>(DY[i]) *
-                    (gamma != nullptr ? static_cast<acc_t>(gamma[i]) : static_cast<acc_t>(1));
+    const acc_t gam = gamma != nullptr ? static_cast<acc_t>(gamma[i]) : static_cast<acc_t>(1);
     const acc_t xhat = (static_cast<acc_t>(XZ[i]) - mu) * rs;
+    acc_t dh = static_cast<acc_t>(DY[i]);
+    if constexpr (DGrad::kNeedsH) {
+      const acc_t bet = beta != nullptr ? static_cast<acc_t>(beta[i]) : static_cast<acc_t>(0);
+      dh = dgrad.apply(dh, xhat * gam + bet);
+    }
+    const acc_t g = dh * gam;
     if constexpr (!kRMS) sums.a += g;
     sums.b += g * xhat;
   }
@@ -79,9 +91,14 @@ __global__ void norm_bwd_dx_kernel(const scalar_t* __restrict__ dy,
   const acc_t c2 = s_c2;
 
   for (int64_t i = tid; i < N; i += stride) {
-    const acc_t g = static_cast<acc_t>(DY[i]) *
-                    (gamma != nullptr ? static_cast<acc_t>(gamma[i]) : static_cast<acc_t>(1));
+    const acc_t gam = gamma != nullptr ? static_cast<acc_t>(gamma[i]) : static_cast<acc_t>(1);
     const acc_t xhat = (static_cast<acc_t>(XZ[i]) - mu) * rs;
+    acc_t dh = static_cast<acc_t>(DY[i]);
+    if constexpr (DGrad::kNeedsH) {
+      const acc_t bet = beta != nullptr ? static_cast<acc_t>(beta[i]) : static_cast<acc_t>(0);
+      dh = dgrad.apply(dh, xhat * gam + bet);
+    }
+    const acc_t g = dh * gam;
     acc_t v = rs * (g - c1 - xhat * c2);
     if (DZ != nullptr) v += static_cast<acc_t>(DZ[i]);
     DX[i] = static_cast<scalar_t>(v);
@@ -94,15 +111,17 @@ __global__ void norm_bwd_dx_kernel(const scalar_t* __restrict__ dy,
 // in L1/L2 between the passes (the same argument as the forward's store-pass
 // re-read), so caching it in registers would cost occupancy for no HBM
 // saving — a measured non-choice, not an oversight.
-template <typename scalar_t, typename acc_t, bool kRMS>
+template <typename scalar_t, typename acc_t, bool kRMS, typename DGrad = DGradNone>
 __global__ void norm_bwd_dx_vec_kernel(const scalar_t* __restrict__ dy,
                                        const scalar_t* __restrict__ dz_extra,  // null => 0
                                        const scalar_t* __restrict__ xz,
                                        const acc_t* __restrict__ mean,         // null iff kRMS
                                        const acc_t* __restrict__ rstd,
                                        const scalar_t* __restrict__ gamma,     // null => 1
+                                       const scalar_t* __restrict__ beta,      // read iff DGrad::kNeedsH
                                        scalar_t* __restrict__ dx,
-                                       int64_t N) {
+                                       int64_t N,
+                                       DGrad dgrad = {}) {
   using V = Vec<scalar_t>;
   constexpr int kW = kVecWidth<scalar_t>;
   const int64_t row = blockIdx.x;
@@ -115,6 +134,7 @@ __global__ void norm_bwd_dx_vec_kernel(const scalar_t* __restrict__ dy,
   const V* DZ =
       dz_extra != nullptr ? reinterpret_cast<const V*>(dz_extra + row * N) : nullptr;
   const V* G = gamma != nullptr ? reinterpret_cast<const V*>(gamma) : nullptr;
+  const V* B = beta != nullptr ? reinterpret_cast<const V*>(beta) : nullptr;
   V* DX = reinterpret_cast<V*>(dx + row * N);
   const acc_t mu = kRMS ? static_cast<acc_t>(0) : mean[row];
   const acc_t rs = rstd[row];
@@ -126,13 +146,21 @@ __global__ void norm_bwd_dx_vec_kernel(const scalar_t* __restrict__ dy,
   for (int64_t i = tid; i < nvec; i += stride) {
     const V dyv = DY[i];
     const V xzv = XZ[i];
-    V gv;
+    V gv, bv;
     if (G) gv = G[i];
+    if constexpr (DGrad::kNeedsH) {
+      if (B) bv = B[i];
+    }
 #pragma unroll
     for (int k = 0; k < kW; ++k) {
-      const acc_t g = static_cast<acc_t>(dyv.v[k]) *
-                      (G ? static_cast<acc_t>(gv.v[k]) : static_cast<acc_t>(1));
+      const acc_t gam = G ? static_cast<acc_t>(gv.v[k]) : static_cast<acc_t>(1);
       const acc_t xhat = (static_cast<acc_t>(xzv.v[k]) - mu) * rs;
+      acc_t dh = static_cast<acc_t>(dyv.v[k]);
+      if constexpr (DGrad::kNeedsH) {
+        const acc_t bet = B ? static_cast<acc_t>(bv.v[k]) : static_cast<acc_t>(0);
+        dh = dgrad.apply(dh, xhat * gam + bet);
+      }
+      const acc_t g = dh * gam;
       if constexpr (!kRMS) sums.a += g;
       sums.b += g * xhat;
     }
@@ -149,15 +177,23 @@ __global__ void norm_bwd_dx_vec_kernel(const scalar_t* __restrict__ dy,
   for (int64_t i = tid; i < nvec; i += stride) {
     const V dyv = DY[i];
     const V xzv = XZ[i];
-    V gv, dzv;
+    V gv, bv, dzv;
     if (G) gv = G[i];
+    if constexpr (DGrad::kNeedsH) {
+      if (B) bv = B[i];
+    }
     if (DZ) dzv = DZ[i];
     V out;
 #pragma unroll
     for (int k = 0; k < kW; ++k) {
-      const acc_t g = static_cast<acc_t>(dyv.v[k]) *
-                      (G ? static_cast<acc_t>(gv.v[k]) : static_cast<acc_t>(1));
+      const acc_t gam = G ? static_cast<acc_t>(gv.v[k]) : static_cast<acc_t>(1);
       const acc_t xhat = (static_cast<acc_t>(xzv.v[k]) - mu) * rs;
+      acc_t dh = static_cast<acc_t>(dyv.v[k]);
+      if constexpr (DGrad::kNeedsH) {
+        const acc_t bet = B ? static_cast<acc_t>(bv.v[k]) : static_cast<acc_t>(0);
+        dh = dgrad.apply(dh, xhat * gam + bet);
+      }
+      const acc_t g = dh * gam;
       acc_t v = rs * (g - c1 - xhat * c2);
       if (DZ) v += static_cast<acc_t>(dzv.v[k]);
       out.v[k] = static_cast<scalar_t>(v);
@@ -169,16 +205,20 @@ __global__ void norm_bwd_dx_vec_kernel(const scalar_t* __restrict__ dy,
 // Stage 1 of the parameter gradients. kTile = 32.
 constexpr int kBwdTile = 32;
 
-template <typename scalar_t, typename acc_t, bool kRMS, bool kBeta>
+template <typename scalar_t, typename acc_t, bool kRMS, bool kBeta,
+          typename DGrad = DGradNone>
 __global__ void norm_bwd_param_partials_kernel(const scalar_t* __restrict__ dy,
                                                const scalar_t* __restrict__ xz,
                                                const acc_t* __restrict__ mean,  // null iff kRMS
                                                const acc_t* __restrict__ rstd,
+                                               const scalar_t* __restrict__ gamma,  // read iff DGrad::kNeedsH
+                                               const scalar_t* __restrict__ beta,   //   "
                                                acc_t* __restrict__ dgamma_partials,  // [chunks, N]
                                                acc_t* __restrict__ dbeta_partials,   // [chunks, N] or null
                                                int64_t M,
                                                int64_t N,
-                                               int64_t rows_per_chunk) {
+                                               int64_t rows_per_chunk,
+                                               DGrad dgrad = {}) {
   constexpr int kTile = kBwdTile;
   const int64_t col = static_cast<int64_t>(blockIdx.x) * kTile + threadIdx.x;
   const int64_t chunk = blockIdx.y;
@@ -188,10 +228,18 @@ __global__ void norm_bwd_param_partials_kernel(const scalar_t* __restrict__ dy,
   acc_t dg = 0;
   acc_t db = 0;
   if (col < N) {
+    // gamma/beta are loop-invariant per column: hoisted once per thread.
+    acc_t gam = 1;
+    acc_t bet = 0;
+    if constexpr (DGrad::kNeedsH) {
+      if (gamma != nullptr) gam = static_cast<acc_t>(gamma[col]);
+      if (beta != nullptr) bet = static_cast<acc_t>(beta[col]);
+    }
     for (int64_t row = row_begin + threadIdx.y; row < row_end; row += kTile) {
-      const acc_t d = static_cast<acc_t>(dy[row * N + col]);
+      acc_t d = static_cast<acc_t>(dy[row * N + col]);
       const acc_t mu = kRMS ? static_cast<acc_t>(0) : mean[row];
       const acc_t xhat = (static_cast<acc_t>(xz[row * N + col]) - mu) * rstd[row];
+      if constexpr (DGrad::kNeedsH) d = dgrad.apply(d, xhat * gam + bet);
       dg += d * xhat;
       if constexpr (kBeta) db += d;
     }
@@ -229,17 +277,21 @@ __global__ void norm_bwd_param_partials_kernel(const scalar_t* __restrict__ dy,
 constexpr int kPTx = 32;
 constexpr int kPTy = 8;
 
-template <typename scalar_t, typename acc_t, bool kRMS, bool kBeta>
+template <typename scalar_t, typename acc_t, bool kRMS, bool kBeta,
+          typename DGrad = DGradNone>
 __global__ void norm_bwd_param_partials_vec_kernel(
     const scalar_t* __restrict__ dy,
     const scalar_t* __restrict__ xz,
     const acc_t* __restrict__ mean,  // null iff kRMS
     const acc_t* __restrict__ rstd,
+    const scalar_t* __restrict__ gamma,  // read iff DGrad::kNeedsH
+    const scalar_t* __restrict__ beta,   //   "
     acc_t* __restrict__ dgamma_partials,  // [chunks, N]
     acc_t* __restrict__ dbeta_partials,   // [chunks, N] or null
     int64_t M,
     int64_t N,
-    int64_t rows_per_chunk) {
+    int64_t rows_per_chunk,
+    DGrad dgrad = {}) {
   using V = Vec<scalar_t>;
   constexpr int kW = kVecWidth<scalar_t>;
   const int x = threadIdx.x;
@@ -253,6 +305,15 @@ __global__ void norm_bwd_param_partials_vec_kernel(
   acc_t dg[kW] = {};
   acc_t db[kW] = {};
   if (vcol < nvec) {
+    // gamma/beta are loop-invariant per thread: one Vec load each, hoisted.
+    V gv, bv;
+    bool has_g = false, has_b = false;
+    if constexpr (DGrad::kNeedsH) {
+      has_g = gamma != nullptr;
+      has_b = beta != nullptr;
+      if (has_g) gv = reinterpret_cast<const V*>(gamma)[vcol];
+      if (has_b) bv = reinterpret_cast<const V*>(beta)[vcol];
+    }
     for (int64_t row = row_begin + y; row < row_end; row += kPTy) {
       const V dyv = reinterpret_cast<const V*>(dy + row * N)[vcol];
       const V xzv = reinterpret_cast<const V*>(xz + row * N)[vcol];
@@ -260,8 +321,13 @@ __global__ void norm_bwd_param_partials_vec_kernel(
       const acc_t rs = rstd[row];
 #pragma unroll
       for (int k = 0; k < kW; ++k) {
-        const acc_t d = static_cast<acc_t>(dyv.v[k]);
+        acc_t d = static_cast<acc_t>(dyv.v[k]);
         const acc_t xhat = (static_cast<acc_t>(xzv.v[k]) - mu) * rs;
+        if constexpr (DGrad::kNeedsH) {
+          const acc_t gam = has_g ? static_cast<acc_t>(gv.v[k]) : static_cast<acc_t>(1);
+          const acc_t bet = has_b ? static_cast<acc_t>(bv.v[k]) : static_cast<acc_t>(0);
+          d = dgrad.apply(d, xhat * gam + bet);
+        }
         dg[k] += d * xhat;
         if constexpr (kBeta) db[k] += d;
       }

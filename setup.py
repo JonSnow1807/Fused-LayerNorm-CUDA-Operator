@@ -52,6 +52,7 @@ setup(
                 "csrc/norm_fwd_rms.cu",
                 "csrc/norm_fwd_ln.cu",
                 "csrc/norm_bwd.cu",
+                "csrc/norm_bwd_gelu.cu",
             ],
             extra_compile_args={"cxx": list(_FLAGS), "nvcc": list(_FLAGS)},
         )

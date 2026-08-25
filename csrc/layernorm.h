@@ -97,18 +97,26 @@ void fused_add_layernorm_fwd_cuda_launch(const at::Tensor& input2d,
 // forward). Runs the generic template in norm_fwd_ln.cu; its normalise
 // arithmetic and reduction order match layernorm_cuda_launch's kernels, so
 // the output is bitwise identical to the inference path.
+// epi: kNone, kGeluErf or kGeluTanh (the GELU epilogues apply the activation
+// to the acc-precision normalised+affine value before the cast, matching the
+// inference kernels' order of operations).
 void layernorm_fwd_train_cuda_launch(const at::Tensor& input2d,
                                      const at::Tensor& weight_or_undef,
                                      const at::Tensor& bias_or_undef,
                                      at::Tensor& output2d,
                                      at::Tensor& mean2d,
                                      at::Tensor& rstd2d,
-                                     double eps);
+                                     double eps,
+                                     fused_norm::NormEpilogue epi = fused_norm::NormEpilogue::kNone);
 
-// Backward (norm_bwd.cu). xz2d is what the forward normalised (input, or the
-// rounded sum for fused-add); mean is defined iff LayerNorm; dz_extra (when
-// defined) is the downstream cotangent of the fused-add op's new_residual
-// output, added elementwise into dx (dx = dresidual for fused-add).
+// Backward (norm_bwd.cu; GELU instantiations in norm_bwd_gelu.cu). xz2d is
+// what the forward normalised (input, or the rounded sum for fused-add);
+// mean is defined iff LayerNorm; dz_extra (when defined) is the downstream
+// cotangent of the fused-add op's new_residual output, added elementwise
+// into dx (dx = dresidual for fused-add). act is the forward's fused
+// activation: kNone, or (LayerNorm only) kGeluErf/kGeluTanh, in which case
+// the kernels transform the cotangent by act'(h) with h recomputed from
+// xz/mean/rstd/weight/bias — bias_or_undef is read only then.
 void norm_bwd_dx_cuda_launch(bool rms,
                              const at::Tensor& dy2d,
                              const at::Tensor& dz_extra2d_or_undef,
@@ -116,7 +124,9 @@ void norm_bwd_dx_cuda_launch(bool rms,
                              const at::Tensor& mean_or_undef,
                              const at::Tensor& rstd,
                              const at::Tensor& weight_or_undef,
-                             at::Tensor& dx2d);
+                             const at::Tensor& bias_or_undef,
+                             at::Tensor& dx2d,
+                             fused_norm::NormEpilogue act);
 
 // Stage 1 of the deterministic two-stage parameter gradients: fixed-chunk
 // fp32 partials of shape [num_chunks, N] (dgamma_partials.size(0) chooses the
@@ -127,8 +137,34 @@ void norm_bwd_param_partials_cuda_launch(bool rms,
                                          const at::Tensor& xz2d,
                                          const at::Tensor& mean_or_undef,
                                          const at::Tensor& rstd,
+                                         const at::Tensor& weight_or_undef,
+                                         const at::Tensor& bias_or_undef,
                                          at::Tensor& dgamma_partials,
-                                         at::Tensor& dbeta_partials_or_undef);
+                                         at::Tensor& dbeta_partials_or_undef,
+                                         fused_norm::NormEpilogue act);
+
+// GELU legs of the two backward launchers (norm_bwd_gelu.cu) — internal:
+// called by the launchers above when act != kNone, keeping the ~erf/tanh
+// instantiations in their own TU. LayerNorm family only.
+void norm_bwd_dx_gelu_cuda(bool tanh_approx,
+                           const at::Tensor& dy2d,
+                           const at::Tensor& dz_extra2d_or_undef,
+                           const at::Tensor& xz2d,
+                           const at::Tensor& mean2d,
+                           const at::Tensor& rstd,
+                           const at::Tensor& weight_or_undef,
+                           const at::Tensor& bias_or_undef,
+                           at::Tensor& dx2d);
+
+void norm_bwd_param_partials_gelu_cuda(bool tanh_approx,
+                                       const at::Tensor& dy2d,
+                                       const at::Tensor& xz2d,
+                                       const at::Tensor& mean2d,
+                                       const at::Tensor& rstd,
+                                       const at::Tensor& weight_or_undef,
+                                       const at::Tensor& bias_or_undef,
+                                       at::Tensor& dgamma_partials,
+                                       at::Tensor& dbeta_partials_or_undef);
 
 // Stage 2: sums each requested [chunks, N] partials tensor over chunks in
 // fixed ascending order and casts into the (pre-allocated, param-dtype)

@@ -154,15 +154,22 @@ def layer_norm_bwd(
     need_dx: bool = True,
     need_dgamma: bool = True,
     need_dbeta: bool = True,
+    bias: Optional[Tensor] = None,
+    activation: int = 0,
 ) -> tuple[Tensor, Tensor, Tensor]:
+    # activation: 0 none, 1 GELU (erf), 2 GELU (tanh) - the kernels then
+    # transform the cotangent by act'(h), h recomputed from xz/stats/params
+    # (bias is read only in that case). Int, not str: torch 2.4's schema
+    # inference rejects string defaults.
     return _require_ext().layernorm_bwd(
-        dy, xz, mean, rstd, weight, dz_extra, need_dx, need_dgamma, need_dbeta
+        dy, xz, mean, rstd, weight, dz_extra, need_dx, need_dgamma, need_dbeta,
+        bias, activation,
     )
 
 
 @layer_norm_bwd.register_fake
 def _(dy, xz, mean, rstd, weight=None, dz_extra=None, need_dx=True, need_dgamma=True,
-      need_dbeta=True):
+      need_dbeta=True, bias=None, activation=0):
     n = xz.shape[-1]
     empty0 = xz.new_empty(0)
     dx = xz.new_empty(xz.shape) if need_dx else empty0
@@ -196,6 +203,59 @@ torch.library.register_autograd(
     "fused_layernorm::layer_norm_fwd_train",
     _layer_norm_backward,
     setup_context=_layer_norm_setup,
+)
+
+
+@torch.library.custom_op(
+    "fused_layernorm::layer_norm_gelu_fwd_train", mutates_args=(), device_types="cuda"
+)
+def layer_norm_gelu_fwd_train(
+    input: Tensor,
+    weight: Optional[Tensor] = None,
+    bias: Optional[Tensor] = None,
+    eps: float = 1e-5,
+    tanh_approx: bool = False,
+) -> tuple[Tensor, Tensor, Tensor]:
+    return _require_ext().layernorm_fwd_train(
+        input, weight, bias, eps, 2 if tanh_approx else 1
+    )
+
+
+@layer_norm_gelu_fwd_train.register_fake
+def _(input, weight=None, bias=None, eps=1e-5, tanh_approx=False):
+    acc = torch.float64 if input.dtype == torch.float64 else torch.float32
+    stats = input.new_empty(input.shape[:-1], dtype=acc)
+    return input.new_empty(input.shape), stats, stats.clone()
+
+
+def _layer_norm_gelu_setup(ctx, inputs, output):
+    input, weight, bias, eps, tanh_approx = inputs
+    _, mean, rstd = output
+    # bias is saved because the backward recomputes h = xhat*gamma + beta per
+    # element to evaluate gelu'(h) - no extra M x N tensor is stored.
+    ctx.save_for_backward(input, weight, bias, mean, rstd)
+    ctx.tanh_approx = bool(tanh_approx)
+    ctx.mark_non_differentiable(mean, rstd)
+    _no_materialize(ctx)
+
+
+def _layer_norm_gelu_backward(ctx, grad_y, grad_mean, grad_rstd):
+    if grad_y is None:
+        return None, None, None, None, None
+    input, weight, bias, mean, rstd = ctx.saved_tensors
+    need_dx, need_dw, need_db = _needs(ctx, 0), _needs(ctx, 1), _needs(ctx, 2)
+    dx, dgamma, dbeta = torch.ops.fused_layernorm.layer_norm_bwd(
+        grad_y, input, mean, rstd, weight, None,
+        need_dx, need_dw and weight is not None, need_db and bias is not None,
+        bias, 2 if ctx.tanh_approx else 1,
+    )
+    return _grad_or_none(dx), _grad_or_none(dgamma), _grad_or_none(dbeta), None, None
+
+
+torch.library.register_autograd(
+    "fused_layernorm::layer_norm_gelu_fwd_train",
+    _layer_norm_gelu_backward,
+    setup_context=_layer_norm_gelu_setup,
 )
 
 
