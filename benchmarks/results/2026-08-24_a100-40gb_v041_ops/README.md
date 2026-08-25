@@ -1,5 +1,12 @@
 # 2026-08-24 — A100-SXM4-40GB — v0.4.1 op-family measurements
 
+> **Superseded by `../2026-08-25_a100-40gb_v042_ops/`** (v0.4.2 fp8
+> NaN-scale fix + locked-clock methodology). Caveat when comparing: this run
+> used default, unlocked clocks — its small-shape (~10 µs) kernel times
+> reflect a favourable clock state that did not reproduce the next day
+> (up to 29 % on `rms_norm_fp8` at 512×1024; `docs/methodology.md` §7).
+> Large-shape numbers reproduce within ~2 %.
+
 Supersedes `../2026-08-24_a100-40gb_v040_ops/` (kept as the historical record
 of the v0.4.0 claims) for two reasons: v0.4.1's benchmark **fairness fix** —
 the eager fp8 composite previously computed `y.float()` twice, handicapping

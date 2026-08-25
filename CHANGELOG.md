@@ -4,7 +4,8 @@
 
 Found by a randomized contract fuzz (130 random shape/dtype configs) run as a
 post-release verification pass: v0.4.1 fixed NaN handling in the fp8 *value*
-path but not in the dynamic *scale* path.
+path but not in the dynamic *scale* path. The fuzz is now committed as
+`tests/fuzz_contracts.py` (run explicitly; not part of the pytest suite).
 
 * **Dynamic fp8 scale on a NaN row was silently finite.** The per-row amax
   reduction used `fmaxf` (and a plain `>` select in the warp shuffle), both of
@@ -21,9 +22,28 @@ path but not in the dynamic *scale* path.
   three dtypes.
 * Measured cost of the correct semantics: ~2–4 % kernel time on the two
   fp8-dynamic ops only (the amax pass gains one integer-max per element);
-  every other op is untouched. This release's benchmark data re-measures the
-  fp8 claims; the tightest one ("≥ 1× vs the compiled chain at every shape")
-  still holds.
+  every other op is untouched.
+
+### Measured (2026‑08‑25, A100‑SXM4‑40GB, locked clocks)
+
+* This release's data
+  (`benchmarks/results/2026-08-25_a100-40gb_v042_ops/`, clean clone of
+  `c24b55a`, clock state recorded in the JSON metadata) re-measures
+  everything. The fp8 headline survives its own fix:
+  ≥ 1× vs the `torch.compile`'d chain at every shape — now 1.03–1.73×
+  (`rms_norm_fp8`) and 1.01–1.74× (`fused_add_rms_norm_fp8`) in fp16, with
+  the 512×1024 margin thinned to 1.01–1.03× by the NaN fix. Full tables in
+  the results README.
+* **Benchmark methodology change**: committed runs now lock SM clocks at the
+  boost ceiling (`nvidia-smi -lgc`) first. Discovered re-measuring v0.4.1:
+  with default unlocked clocks, ~10 µs kernels measured up to 29 % slower
+  than on release night (1095 MHz application clocks vs 1410 MHz boost —
+  short profiler loops don't reliably ramp), while ≥ 100 µs kernels
+  reproduced within ~2 %. Locked clocks reproduce the committed v0.4.1
+  numbers, and ratios at small shapes are now stable day-to-day.
+  `docs/methodology.md` §7 documents it. Consequence: v0.4.2 numbers are
+  not directly comparable to the v0.4.1 directory at the smallest shapes
+  (both directories' READMEs say so).
 
 ## 0.4.1 — 2026‑08‑24 — post-release integrity audit fixes
 

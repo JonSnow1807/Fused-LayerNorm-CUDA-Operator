@@ -185,6 +185,30 @@ substring (plus H100 SXM 3,350 / H100 PCIe 2,000 / V100 900 from the
 respective NVIDIA datasheets) and prints "peak unknown; utilization not
 computed" for anything else. Do not hard-code 1555 for "any A100".
 
+## 7. Lock the clocks, or small-shape numbers are not reproducible
+
+Learned the hard way between v0.4.1 and v0.4.2. On this A100, default
+application clocks are 1095 MHz against a 1410 MHz boost ceiling, and with
+persistence mode off the clock state resets whenever the driver unloads. A
+~10 µs kernel timed under a 200-call profiler loop does not reliably pull the
+SM into full boost, so its measured time depends on whatever clock state the
+machine woke up with: the same v0.4.1 binary measured `rms_norm_fp8` at
+512×1024 as 7.63 µs on release night and a stable 9.81 µs the next day — a
+29 % swing, almost exactly the 1410/1095 clock ratio — while ≥ 100 µs kernels
+reproduced within ~2 % (sustained load boosts regardless), and *ratios* at
+the affected shapes moved enough to flip a "≥ 1×" claim. Since v0.4.2 every
+committed run locks clocks first:
+
+```bash
+sudo nvidia-smi -pm 1            # persistence mode: clock state survives
+sudo nvidia-smi -lgc 1410,1410   # pin SM clock at the boost ceiling
+```
+
+and the results README records that state. Competitors run under the same
+clocks, so ratios are fair either way — locking just makes them stable
+day-to-day. If you cannot lock clocks (no root), expect small-shape kernel
+times to be snapshots of a clock state, not properties of the kernel.
+
 ## Sources
 
 * NVIDIA A100 Tensor Core GPU datasheet — <https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf> (product page: <https://www.nvidia.com/en-us/data-center/a100/>)
