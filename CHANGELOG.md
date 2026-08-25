@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.5.0 — 2026‑08‑25 — fast backward, GELU backward, LayerNorm-family fp8
+
+### Added
+
+* **Vectorised backward kernels.** The dx kernel and the parameter-partials
+  kernel gain 16-byte `Vec` variants mirroring the forward's pattern (the
+  scalar kernels remain the odd-N/misaligned fallback and the fp64 gradcheck
+  path); the partials block shrinks from 1024 threads/5-level reduce to
+  (32,8)/3-level with per-thread register accumulators; the chunk policy now
+  also fills the GPU at small M; and one fused finalize kernel replaces
+  `partials.sum(0).to(dtype)` ×2 (up to 7 device steps → 3 launches). The
+  fwd-train ops also stop materialising zero cotangents for the stats
+  outputs where the ctx supports it. Determinism contract unchanged: no
+  atomics, fixed chunk grid, fixed reduction orders — dx/dgamma/dbeta remain
+  bitwise run-to-run reproducible (tested, including the new chunk-policy
+  path). **Cross-version note:** dgamma/dbeta bit values differ from v0.4.2
+  (different reduce split and stage-2 order).
+* **`layer_norm_gelu` backward** (erf and tanh) — the op table's last
+  "fallback" cell is gone. Implemented as a `DGrad` cotangent-transform hook
+  on the backward kernels: `dh = dy * gelu'(h)` with `h = xhat*gamma + beta`
+  recomputed in-kernel (no extra M×N tensor saved); the fwd-train launcher
+  gains the GELU epilogues, and grad-requiring eligible calls route to the
+  new `layer_norm_gelu_fwd_train` custom op. Gradcheck-verified (fp64, both
+  approximations). **Behavior change** (as v0.4.0's grad-mode change was):
+  grad-requiring `layer_norm_gelu` calls no longer fall back to eager.
+* **LayerNorm-family fp8 outputs**: `layer_norm_fp8` and
+  `fused_add_layer_norm_fp8` (static + dynamic scales, bias included) — the
+  LN mirror of the RMS fp8 path, sharing the same epilogues, byte contract
+  and NaN-propagating dynamic scale.
+* Suite grows 260 → 289 tests; the fuzz gains backward and LN-fp8 configs.
+
+### Measured (2026‑08‑25, A100‑SXM4‑40GB, locked clocks, clean clone `b38a935`)
+
+* **The training step is no longer the weak spot at production shapes.** A
+  full fwd+bwd step vs PyTorch autograd (kernel time): fp16 LN 0.75–1.42×,
+  RMS 0.82–1.44×, LN+GELU 0.80–1.44× — ≥ 1.16× at every M ≥ 2048 shape —
+  and fp32 LN 0.83–1.13×, RMS 0.86–1.16×, LN+GELU 0.95–1.88×. v0.4.2
+  measured 0.43–1.10×. Still published: 512×1024 stays 0.75–0.95× (both
+  sides launch-bound, ours pays more launches) and small-M wall clock stays
+  dispatch-dominated (~0.5×), amortised by torch.compile/CUDA graphs.
+* New fp8 ops (fp16, kernel time): `layer_norm_fp8` 3.5–6.0× vs the eager
+  chain and 1.02–1.49× vs the compiled chain at M ≥ 2048 — but **0.75× at
+  512×1024**: the "≥ 1× at every shape" fp8 claim remains deliberately
+  RMS-only (re-measured this release: 1.01–1.76× fp16, 1.10–1.69× fp32).
+  `fused_add_layer_norm_fp8`: 3.6–5.7× / 1.25–1.68× (0.74× at 512×1024).
+* Forward rows for pre-existing ops re-validate v0.4.2 within noise; full
+  tables in `benchmarks/results/2026-08-25_a100-40gb_v050_ops/`.
+
 ## 0.4.2 — 2026‑08‑25 — dynamic-fp8 NaN-scale fix
 
 Found by a randomized contract fuzz (130 random shape/dtype configs) run as a

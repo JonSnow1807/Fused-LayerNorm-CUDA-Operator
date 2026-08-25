@@ -17,7 +17,7 @@ measured claim.
 > number quoted here points at a committed file under
 > [`benchmarks/results/`](benchmarks/results/) whose JSON records the git
 > commit it was produced from with a clean working tree, and the full test
-> suite (currently 260 tests) is run on hardware before any release. v0.3.0
+> suite (currently 289 tests) is run on hardware before any release. v0.3.0
 > (2026‑08‑20) added the first kernel-time measurements; v0.4.0 turned the
 > single forward-only kernel into the library described below; v0.4.1 and
 > v0.4.2 are post-release audit/fuzz patches whose defects — including this
@@ -38,11 +38,15 @@ instead of benchmarking around it.
 
 | op | fwd | bwd (training) | inplace | fp8 out |
 |---|---|---|---|---|
-| `layer_norm` | ✅ | ✅ | – | – |
-| `layer_norm_gelu` | ✅ | fallback | – | – |
+| `layer_norm` | ✅ | ✅ | – | ✅ static + dynamic |
+| `layer_norm_gelu` | ✅ | ✅ (erf + tanh) | – | – |
 | `rms_norm` | ✅ | ✅ | – | ✅ static + dynamic |
-| `fused_add_layer_norm` | ✅ | ✅ | ✅ (inference) | – |
+| `fused_add_layer_norm` | ✅ | ✅ | ✅ (inference) | ✅ static + dynamic |
 | `fused_add_rms_norm` | ✅ | ✅ | ✅ (inference) | ✅ static + dynamic |
+
+Since v0.5.0 the table has no asterisks left: every op has a real CUDA
+backward (vectorised, deterministic — see below), and fp8 outputs cover
+both norm families.
 
 Modules: `LayerNorm(nn.LayerNorm)`, `RMSNorm(nn.RMSNorm)` (exact drop-ins,
 including `F.rms_norm`'s subtle `eps=None` = machine-epsilon semantics),
@@ -85,7 +89,8 @@ w = torch.rand(4096, device="cuda", dtype=torch.float16) + 0.5
 # The headline op: one kernel instead of add + norm.
 out, new_res = fln.fused_add_rms_norm(x, res, (4096,), w)
 
-# Drop-in modules (training works: real CUDA backward since v0.4.0).
+# Drop-in modules. Training works: vectorised, deterministic CUDA backward
+# (>= 1x autograd kernel time at production shapes since v0.5.0).
 block = fln.FusedAddRMSNorm(4096, dtype=torch.float16, device="cuda")
 normed, stream = block(x, res)
 
@@ -131,58 +136,66 @@ days; [`docs/methodology.md`](docs/methodology.md) §7 has the numbers).
 Competitors include the same composite under `torch.compile(fullgraph=True)`
 — beating only eager would be a strawman.
 
-### 2026‑08‑25, A100‑SXM4‑40GB: the op family (v0.4.2 data)
+### 2026‑08‑25, A100‑SXM4‑40GB: the op family (v0.5.0 data)
 
-[`benchmarks/results/2026-08-25_a100-40gb_v042_ops/`](benchmarks/results/2026-08-25_a100-40gb_v042_ops/)
-(fp16 + fp32; produced from a clean clone of `c24b55a`, `git_dirty=false`,
+[`benchmarks/results/2026-08-25_a100-40gb_v050_ops/`](benchmarks/results/2026-08-25_a100-40gb_v050_ops/)
+(fp16 + fp32; produced from a clean clone of `b38a935`, `git_dirty=false`,
 SM clocks recorded in the JSONs as locked at 1410 MHz; supersedes the
-v0.4.1 directory after the fp8 NaN-scale
-fix — which costs the fp8-dynamic ops ~2–4 % kernel time — and the switch to
-locked clocks; details in that directory's README). Kernel-time ratios, ours
-vs competitor, over shapes from 512×1024 to 4096×8192:
+v0.4.2 directory after the backward kernels were vectorised and the GELU
+backward and LN-family fp8 ops landed; details and full tables in that
+directory's README). Kernel-time ratios, ours vs competitor, over shapes
+from 512×1024 to 4096×8192:
 
 | op (fp16) | vs eager composite | vs `torch.compile`'d composite |
 |---|---|---|
-| `fused_add_rms_norm` | **1.23–1.58×** | 0.96–0.99× at M ≥ 2048 (0.80× at 512×1024) |
+| `fused_add_rms_norm` | **1.23–1.59×** | 0.96–0.99× at M ≥ 2048 (0.81× at 512×1024) |
 | `fused_add_layer_norm` | 1.08–1.49× | 0.88–1.00× at M ≥ 2048 |
-| `rms_norm` (vs aten's fused `F.rms_norm`) | 0.98–1.29× | 0.77–1.28× |
-| `rms_norm_fp8` dynamic | **4.8–7.0×** | **1.03–1.73× — ≥ 1 at every shape** |
-| `fused_add_rms_norm_fp8` dynamic | **4.9–5.9×** | **1.01–1.74× — ≥ 1 at every shape** |
-| training step fwd+bwd (LN / RMS) | 0.43–1.04× / 0.55–1.10× | — |
+| `rms_norm` (vs aten's fused `F.rms_norm`) | 0.99–1.29× | 0.77–1.26× |
+| `rms_norm_fp8` dynamic | **4.9–7.2×** | **1.04–1.76× — ≥ 1 at every shape** |
+| `fused_add_rms_norm_fp8` dynamic | **5.0–6.0×** | **1.01–1.76× — ≥ 1 at every shape** |
+| `layer_norm_fp8` dynamic | 3.5–6.0× | 1.02–1.49× at M ≥ 2048 (0.75× at 512×1024) |
+| `fused_add_layer_norm_fp8` dynamic | 3.6–5.7× | 1.25–1.68× at M ≥ 2048 (0.74× at 512×1024) |
+| training step fwd+bwd (LN / RMS / LN+GELU) | **0.75–1.42× / 0.82–1.44× / 0.80–1.44×** | — |
 
 How to read it honestly:
 
+* **Training through these ops is now fast, not just correct** (the v0.5.0
+  change): the backward kernels use the same 16-byte vectorised loads as
+  the forwards, a GPU-filling chunk policy and a single fused stage-2
+  reduction — still deterministic, no atomics, bitwise run-to-run
+  reproducible. A full fwd+bwd LN/RMS step measures **1.17–1.44× of
+  PyTorch's autograd at every M ≥ 2048 shape in fp16** (GELU step:
+  1.16–1.44×; fp32: 1.01–1.16×, and the fused GELU step 1.51–1.88×, where
+  autograd pays the erf chain). The
+  remaining sub-1× cell is 512×1024 kernel time (0.75–0.86×) plus
+  dispatch-bound small-M wall clock (~0.5×) — both engine/launch-bound,
+  published, and amortised away by `torch.compile` or larger batches.
 * **The fused-add ops deliver what they promise in eager mode**: the RMS op
-  at 1.23–1.58× kernel time over the eager composite (63–85 % of datasheet
+  at 1.23–1.59× kernel time over the eager composite (64–86 % of datasheet
   bandwidth), the LayerNorm op at 1.08–1.49× (35–84 %), both at kernel parity
   with Inductor's fused codegen at production shapes. On **wall clock** they
-  beat the eager composite everywhere (1.12–1.48×, both dtypes) and the
+  beat the eager composite everywhere (1.13–1.48×, both dtypes) and the
   compiled composite at most shapes — it pays ~90 µs of guard/dispatch per
-  eager call (2048×4096 fp16: ours 55 µs, compiled 1.64× slower) — but ties
-  it at fp16's two largest shapes (0.99–1.01×) and **loses to it by ~15 % at
-  fp32's largest shape** (0.85–0.86× at 4096×8192): once the guard overhead
-  is amortised over a big enough call, Inductor's kernels win that one.
-* **The norm→fp8 fusion is the headline**: 4.8–7.0× over the eager
-  norm→amax→cast chain, and the one place this library beats
-  `torch.compile`'s fused kernel outright — **≥ 1× at every measured shape**
-  (up to 1.74×): Inductor fuses the chain but still materialises
-  intermediates the kernel keeps in registers/L1. Full disclosure: at
-  512×1024 the fp16 lead is now 1.01–1.03× (fp32: 1.19–1.21×) — a few points
-  of it went to the v0.4.2 NaN-correctness fix, a trade this repository
-  makes without hesitation.
+  eager call — but ties it at fp16's largest shapes (0.99–1.01×) and **loses
+  to it by ~15 % at fp32's largest shape** (0.85–0.86× at 4096×8192): once
+  the guard overhead is amortised over a big enough call, Inductor's kernels
+  win that one.
+* **The norm→fp8 fusion is the headline**: 3.5–7.2× over the eager
+  norm→amax→cast chain across both families, and the RMS fp8 ops beat
+  `torch.compile`'s fused kernel outright — **≥ 1× at every measured shape
+  and dtype** (up to 1.76×). That claim is deliberately RMS-only: the new
+  LayerNorm fp8 ops win at every M ≥ 2048 shape (1.02–1.68×) but **lose the
+  smallest shape to Inductor** (0.74–0.88× at 512×1024). On wall clock every
+  fp8 op beats the compiled chain at every measured shape (1.08–10.8×).
 * Plain `rms_norm` competes with aten's own fused kernel and still comes out
-  ahead at most shapes (up to 1.29× fp16, 1.32× fp32; ~93 % of peak at
+  ahead at most shapes (up to 1.29× fp16, 1.31× fp32; ~96 % of peak at
   4096×4096) — but near-parity, not headlines, is the honest framing there.
-* **The published weak spots**: at 512×1024 Inductor's small-shape kernels
-  beat ours on pure kernel time for the non-fp8 ops (0.52–0.95× across both
-  dtypes — while every compiled candidate pays 4.1–10.4× more wall clock per
-  call at that shape); fp32's largest shape loses to the compiled composite
-  on wall clock (above); and a full training step measures **0.43–1.10× of
-  PyTorch's autograd in fp16** (fp32: 0.53–1.28×,
-  beating autograd at the three largest shapes) — the backward kernels are
-  correctness-first (scalar loads, deterministic no-atomics parameter grads,
-  gradcheck-verified). Training through these ops is correct and bitwise
-  reproducible; making it fast is future work.
+* **The published weak spots**: 512×1024 — Inductor's small-shape kernels
+  beat ours on pure kernel time for the non-fp8 forwards (0.52–0.95× across
+  both dtypes, while every compiled candidate pays 4.2–10.8× more wall clock
+  per call at that shape) and the training step is 0.75–0.95× there; and
+  fp32's largest shape loses to the compiled composite on wall clock
+  (above).
 * A few JSON rows show >100 % of datasheet bandwidth. The bytes models count
   each tensor exactly once, so the real mechanism is inter-call caching: at
   those shapes the working set (8–34 MB) fits the A100's 40 MB L2 and stays
@@ -215,9 +228,13 @@ its history live in
 * At small shapes Inductor's generated fused kernel can beat ours on pure
   kernel time (while paying far higher wall-clock latency); the committed
   tables show both numbers.
-* `layer_norm_gelu` remains forward-only (falls back under grad).
+* Training steps at M ≲ 1024 remain below autograd on kernel time
+  (0.75–0.95× at 512×1024) and dispatch-bound on wall clock — both sides
+  are launch/engine-bound there and ours pays more launches.
 * fp8 ops are inference-only by design; sm_80 emulates the fp8 convert in
-  software (no hardware convert before sm_89) — measured, not assumed.
+  software (no hardware convert before sm_89) — measured, not assumed. The
+  LayerNorm-family fp8 ops lose the smallest measured shape to Inductor on
+  kernel time (the RMS family does not).
 * Under CUDA autocast every op defers to PyTorch (keeps autocast's fp32
   output semantics exactly).
 
@@ -226,14 +243,14 @@ its history live in
 ```
 csrc/                       kernels: layernorm_cuda_kernel.cu (v0.3.0 LN kernels, unchanged),
                             norm_fwd_kernels.cuh (generic {LN,RMS} x {plain,fused-add} x epilogue),
-                            norm_fwd_{ln,rms}.cu, norm_bwd.cu, norm_{reduce,vec,epilogue,dispatch}.cuh,
-                            bindings.cpp, layernorm.h
+                            norm_fwd_{ln,rms}.cu, norm_bwd{,_gelu}.cu, norm_bwd_kernels.cuh,
+                            norm_{reduce,vec,epilogue,dispatch}.cuh, bindings.cpp, layernorm.h
 fused_layernorm/            package: layernorm.py, rms_norm.py, fused_add.py, quant.py,
                             _ops.py (torch.library custom ops + autograd), _common.py
-tests/                      260 tests: per-op suites, gradcheck (fp64), bitwise contracts,
+tests/                      289 tests: per-op suites, gradcheck (fp64), bitwise contracts,
                             opcheck, torch.compile fullgraph, determinism, NaN semantics;
                             fuzz_contracts.py (randomized contract fuzz, run explicitly)
-benchmarks/                 bench_layernorm.py (LayerNorm), bench_norms.py (v0.4.0 op family),
+benchmarks/                 bench_layernorm.py (LayerNorm), bench_norms.py (the op family),
                             results/ (committed data with git provenance), legacy/
 docs/methodology.md         how to time a small CUDA op without fooling yourself
 .github/workflows/ci.yml    CPU test matrix + CUDA compile-only job
@@ -243,7 +260,8 @@ CHANGELOG.md                every release, including what was once claimed false
 ## Contributing
 
 Most useful: run the benchmarks and test suite on a non-A100 GPU and open a
-PR with the JSON. Also welcome: GELU backward, Hopper tuning, int8 epilogue.
+PR with the JSON. Also welcome: Hopper tuning, int8 epilogue, small-batch
+training-step latency work.
 
 ## Citation
 

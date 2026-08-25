@@ -1,5 +1,10 @@
 # 2026-08-25 — A100-SXM4-40GB — v0.4.2 op-family measurements
 
+> **Superseded by `../2026-08-25_a100-40gb_v050_ops/`** (v0.5.0: vectorised
+> backward kernels — the training-step rows changed most — plus new GELU-bwd
+> and LN-fp8 rows). Same locked-clock methodology, so forward rows compare
+> directly across the two directories.
+
 Supersedes `../2026-08-24_a100-40gb_v041_ops/` (kept as history) for two
 reasons: the v0.4.2 **fp8 NaN-scale fix** — the dynamic-scale amax is now
 NaN-propagating, which costs the two fp8-dynamic ops ~2–4 % kernel time and
