@@ -332,6 +332,122 @@ def _bwd_check(rms: bool):
     return check
 
 
+def _ln_fp8_dynamic_candidates(i):
+    import fused_layernorm
+
+    x, w, b, n = i["x"], i["w"], i["b"], i["n"]
+
+    def composite():
+        y = F.layer_norm(x, (n,), w, b, 1e-5)
+        yf = y.float()  # hoisted: see the RMS fp8 composite
+        s = (yf.abs().amax(-1, keepdim=True).clamp(min=1e-12)) / 448.0
+        q = (yf * (1.0 / s)).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)
+        return q, s
+
+    comp_c = _compiled(composite)
+    comp_c()
+    return [
+        ("fused layer_norm_fp8 (dynamic)",
+         lambda: fused_layernorm.layer_norm_fp8(x, (n,), w, b, 1e-5)),
+        ("eager composite (norm; amax; quant)", composite),
+        ("torch.compile(composite)", comp_c),
+    ]
+
+
+def _ln_fp8_dynamic_check(i):
+    import fused_layernorm
+
+    x, w, b, n = i["x"], i["w"], i["b"], i["n"]
+    out, s = fused_layernorm.layer_norm_fp8(x, (n,), w, b, 1e-5)
+    y = fused_layernorm.layer_norm(x, (n,), w, b, 1e-5)
+    s_ref = y.float().abs().amax(-1, keepdim=True).clamp(min=1e-12) / 448.0
+    assert ((s - s_ref).abs() <= s_ref * 1e-6 + 1e-12).all()
+    q = (y.float() * (1.0 / s)).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)
+    assert torch.equal(out.view(torch.uint8), q.view(torch.uint8))
+
+
+def _ln_fused_add_fp8_candidates(i):
+    import fused_layernorm
+
+    x, r, w, b, n = i["x"], i["r"], i["w"], i["b"], i["n"]
+
+    def composite():
+        z = x + r
+        y = F.layer_norm(z, (n,), w, b, 1e-5)
+        yf = y.float()  # hoisted: see the plain fp8 composite
+        s = (yf.abs().amax(-1, keepdim=True).clamp(min=1e-12)) / 448.0
+        q = (yf * (1.0 / s)).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)
+        return q, z, s
+
+    comp_c = _compiled(composite)
+    comp_c()
+    return [
+        ("fused_add_layer_norm_fp8 (dynamic)",
+         lambda: fused_layernorm.fused_add_layer_norm_fp8(x, r, (n,), w, b, 1e-5)),
+        ("eager composite", composite),
+        ("torch.compile(composite)", comp_c),
+    ]
+
+
+def _ln_fused_add_fp8_check(i):
+    import fused_layernorm
+
+    x, r, w, b, n = i["x"], i["r"], i["w"], i["b"], i["n"]
+    out, z, s = fused_layernorm.fused_add_layer_norm_fp8(x, r, (n,), w, b, 1e-5)
+    assert torch.equal(z, x + r)
+    y = fused_layernorm.layer_norm(z, (n,), w, b, 1e-5)
+    s_ref = y.float().abs().amax(-1, keepdim=True).clamp(min=1e-12) / 448.0
+    assert ((s - s_ref).abs() <= s_ref * 1e-6 + 1e-12).all()
+    q = (y.float() * (1.0 / s)).clamp(-448.0, 448.0).to(torch.float8_e4m3fn)
+    assert torch.equal(out.view(torch.uint8), q.view(torch.uint8))
+
+
+def _gelu_bwd_candidates(i):
+    import fused_layernorm
+
+    x, w, b, n, gy = i["x"], i["w"], i["b"], i["n"], i["gy"]
+
+    def ours():
+        xg = x.detach().requires_grad_()
+        wg = w.detach().requires_grad_()
+        bg = b.detach().requires_grad_()
+        y = fused_layernorm.layer_norm_gelu(xg, (n,), wg, bg, 1e-5)
+        return torch.autograd.grad(y, (xg, wg, bg), gy)
+
+    def composite():
+        xg = x.detach().requires_grad_()
+        wg = w.detach().requires_grad_()
+        bg = b.detach().requires_grad_()
+        y = F.gelu(F.layer_norm(xg, (n,), wg, bg, 1e-5))
+        return torch.autograd.grad(y, (xg, wg, bg), gy)
+
+    return [
+        ("ours: fwd_train + CUDA bwd", ours),
+        ("PyTorch autograd composite", composite),
+    ]
+
+
+def _gelu_bwd_check(i):
+    import fused_layernorm
+
+    x, w, b, n, gy = i["x"], i["w"], i["b"], i["n"], i["gy"]
+    xg = x.detach().requires_grad_()
+    wg = w.detach().requires_grad_()
+    bg = b.detach().requires_grad_()
+    xc = x.detach().requires_grad_()
+    wc = w.detach().requires_grad_()
+    bc = b.detach().requires_grad_()
+    dy = torch.autograd.grad(
+        fused_layernorm.layer_norm_gelu(xg, (n,), wg, bg, 1e-5), (xg, wg, bg), gy
+    )
+    dc = torch.autograd.grad(
+        F.gelu(F.layer_norm(xc, (n,), wc, bc, 1e-5)), (xc, wc, bc), gy
+    )
+    tol = 1e-4 if i["dtype"] == torch.float32 else 5e-2
+    for a, c in zip(dy, dc):
+        assert (a - c).abs().max().item() < tol * max(1.0, c.abs().max().item())
+
+
 OPS: Dict[str, OpSpec] = {
     "rms_norm": OpSpec(
         name="rms_norm",
@@ -372,6 +488,31 @@ OPS: Dict[str, OpSpec] = {
         check=_fused_add_fp8_check,
         bytes_moved=lambda m, n, e: 3 * m * n * e + m * n * 1 + n * e + 4 * m,
         bytes_model="3*M*N*e + M*N*1 + N*e + 4*M (read x, read r, write z, write fp8, ...)",
+    ),
+    "layer_norm_fp8_dynamic": OpSpec(
+        name="layer_norm_fp8_dynamic",
+        make_inputs=_base_inputs,
+        candidates=_ln_fp8_dynamic_candidates,
+        check=_ln_fp8_dynamic_check,
+        bytes_moved=lambda m, n, e: m * n * e + m * n * 1 + 2 * n * e + 4 * m,
+        bytes_model="M*N*e + M*N*1 + 2*N*e + 4*M (read x, write fp8, params, scales)",
+    ),
+    "fused_add_layer_norm_fp8_dynamic": OpSpec(
+        name="fused_add_layer_norm_fp8_dynamic",
+        make_inputs=_base_inputs,
+        candidates=_ln_fused_add_fp8_candidates,
+        check=_ln_fused_add_fp8_check,
+        bytes_moved=lambda m, n, e: 3 * m * n * e + m * n * 1 + 2 * n * e + 4 * m,
+        bytes_model="3*M*N*e + M*N*1 + 2*N*e + 4*M (read x, read r, write z, write fp8, ...)",
+    ),
+    "layer_norm_gelu_bwd": OpSpec(
+        name="layer_norm_gelu_bwd",
+        make_inputs=_bwd_inputs,
+        candidates=_gelu_bwd_candidates,
+        check=_gelu_bwd_check,
+        bytes_moved=lambda m, n, e: 3 * m * n * e + 2 * n * e,
+        bytes_model="~3*M*N*e (read dy, read x, write dx) + param grads",
+        graphs=False,
     ),
     "layer_norm_bwd": OpSpec(
         name="layer_norm_bwd",
