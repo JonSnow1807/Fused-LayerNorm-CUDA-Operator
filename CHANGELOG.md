@@ -48,6 +48,22 @@
 * Forward rows for pre-existing ops re-validate v0.4.2 within noise; full
   tables in `benchmarks/results/2026-08-25_a100-40gb_v050_ops/`.
 
+### Measured — H100 addendum (2026‑08‑25, H100 80GB HBM3, locked 1830 MHz)
+
+* First non-A100 data
+  (`benchmarks/results/2026-08-25_h100-80gb_v050_ops/`, same v0.5.0 clone
+  built for sm90; 289 tests × 3 kernel modes + fuzz green — correct on
+  Hopper, fp8 converts now native). The eager-mode wins transfer and grow
+  (`rms_norm_fp8` 7.7–11.4× vs the eager chain in fp16; fused-add 1.0–1.7×;
+  training up to 1.79× of autograd; 87 % of datasheet peak), but **the
+  kernel-time edge over `torch.compile` does not transfer** — Inductor's
+  Hopper codegen beats these A100-tuned launch heuristics at many shapes
+  (RMS fp8: 0.69–1.20× vs compiled) — so every "≥ 1× vs compiled" claim is
+  now explicitly scoped to the A100. Wall clock: the RMS fp8 ops still beat
+  the compiled chain at every fp16 shape (1.00–3.40×). Clock note: the
+  H100 pins at its *sustained* 1830 MHz rather than the 1980 boost (which
+  it cannot hold under load; methodology §7 applies unchanged).
+
 ## 0.4.2 — 2026‑08‑25 — dynamic-fp8 NaN-scale fix
 
 Found by a randomized contract fuzz (130 random shape/dtype configs) run as a

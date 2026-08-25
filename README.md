@@ -203,6 +203,26 @@ How to read it honestly:
   leaves L2. Compiled candidates exceed 100 % at the same shapes, and
   candidate *ratios* are unaffected (same model both sides).
 
+### 2026‑08‑25, H100 80GB HBM3: second-GPU validation (v0.5.0 data)
+
+[`benchmarks/results/2026-08-25_h100-80gb_v050_ops/`](benchmarks/results/2026-08-25_h100-80gb_v050_ops/)
+(same v0.5.0 clone, built for sm90, clocks locked at the sustained
+1830 MHz, full suite + fuzz green — the kernels are **correct on Hopper**,
+with native fp8 converts). Two findings, both published as measured:
+
+* **The eager-mode wins transfer and grow**: fused-add ops 1.0–1.7× over
+  the eager composite, `rms_norm_fp8` **7.7–11.4×** over the eager chain in
+  fp16 (native converts; A100: 4.9–7.2×), training steps up to 1.79× of
+  autograd, up to 87 % of the 3 350 GB/s datasheet peak.
+* **The kernel-time edge over `torch.compile` does NOT transfer**: Inductor
+  generates markedly better Hopper kernels while these launch heuristics
+  are tuned from A100 measurements only — the RMS fp8 ops measure
+  0.69–1.20× vs the compiled chain there (A100: ≥ 1× everywhere), so **the
+  "≥ 1× vs compiled" claims in the table above are A100 claims**. On wall
+  clock the RMS fp8 ops still beat the compiled chain at every fp16 shape
+  (1.00–3.40×). Hopper tuning is the top contributing item; the H100
+  directory's README has the full honest breakdown.
+
 ### 2026‑08‑20, A100‑SXM4‑40GB: LayerNorm kernel time (v0.3.0)
 
 [`benchmarks/results/2026-08-20_a100-40gb_kernel_time/`](benchmarks/results/2026-08-20_a100-40gb_kernel_time/):
@@ -216,8 +236,11 @@ its history live in
 
 ## Not verified / limitations
 
-* One GPU (A100). The kernel-selection heuristics are tuned on A100
-  measurements; other architectures compile but are unmeasured.
+* Two GPUs measured (A100-SXM4-40GB, H100 80GB HBM3); other architectures
+  compile but are unmeasured. The kernel-selection heuristics are tuned on
+  A100 measurements only — on the H100 the kernels are correct and keep
+  their eager-mode wins, but the kernel-time edge over `torch.compile` is
+  A100-specific (measured and published in the H100 results directory).
 * Small-shape (~10 µs) kernel times are properties of the GPU's clock state
   as much as of the kernel; committed runs lock SM clocks (methodology §7),
   and claims that live on a few percent at those shapes should be read with
