@@ -207,6 +207,28 @@ def _nvidia_driver() -> Optional[str]:
         return None
 
 
+def _gpu_clock_state() -> Optional[Dict[str, str]]:
+    """SM/application/max clocks and persistence mode, from nvidia-smi.
+
+    Recorded because unlocked clocks make ~10 us kernel times a property of
+    the machine's clock state rather than of the kernel (methodology sec. 7);
+    a reader of the JSON can see whether the run was clock-locked.
+    """
+    fields = ["clocks.sm", "clocks.applications.graphics", "clocks.max.sm",
+              "persistence_mode"]
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", f"--query-gpu={','.join(fields)}",
+             "--format=csv,noheader"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        values = [v.strip() for v in out.strip().splitlines()[0].split(",")]
+        return dict(zip(fields, values))
+    except Exception:
+        return None
+
+
 def collect_metadata(repo_root: Path, ext_module: Any) -> Dict[str, Any]:
     props = torch.cuda.get_device_properties(torch.cuda.current_device())
     device_name = torch.cuda.get_device_name()
@@ -232,6 +254,7 @@ def collect_metadata(repo_root: Path, ext_module: Any) -> Dict[str, Any]:
         "extension_version": getattr(ext_module, "__version__", None),
         "argv": sys.argv[1:],
         "nvidia_driver": _nvidia_driver(),
+        "gpu_clock_state": _gpu_clock_state(),
         # Environment that changes what gets measured; None when unset.
         "env_torch_cuda_arch_list": os.environ.get("TORCH_CUDA_ARCH_LIST"),
         "env_fused_layernorm_force_kernel": os.environ.get("FUSED_LAYERNORM_FORCE_KERNEL"),
