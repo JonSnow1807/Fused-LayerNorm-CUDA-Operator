@@ -87,13 +87,24 @@ __device__ __forceinline__ Sum2<acc_t> blockReduceSum2(Sum2<acc_t> v) {
   return v;
 }
 
+// NaN-propagating max: a NaN in either operand wins. `fmaxf` (and a plain
+// `>` select) DROP a NaN operand, which would let the fp8-dynamic amax of a
+// NaN-poisoned row come out finite; `torch.amax` — the eager composite these
+// kernels must match — propagates it.
+template <typename acc_t>
+__device__ __forceinline__ acc_t maxNanPropagate(acc_t a, acc_t b) {
+  if (isnan(a) || isnan(b)) return a + b;  // NaN when either operand is
+  return a > b ? a : b;
+}
+
 // Max over the block (for the fp8-dynamic per-row amax). Same contract as
-// blockReduceSum; the identity is 0 because callers reduce |values| >= 0.
+// blockReduceSum; the identity is 0 because callers reduce |values| >= 0,
+// and NaN propagates (see maxNanPropagate).
 template <typename acc_t>
 __device__ __forceinline__ acc_t warpReduceMax(acc_t val) {
   for (int offset = kWarpSize / 2; offset > 0; offset /= 2) {
     const acc_t other = __shfl_xor_sync(0xffffffffu, val, offset);
-    val = other > val ? other : val;
+    val = maxNanPropagate(val, other);
   }
   return val;
 }

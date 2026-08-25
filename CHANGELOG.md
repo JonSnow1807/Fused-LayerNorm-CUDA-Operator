@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.2 — 2026‑08‑25 — dynamic-fp8 NaN-scale fix
+
+Found by a randomized contract fuzz (130 random shape/dtype configs) run as a
+post-release verification pass: v0.4.1 fixed NaN handling in the fp8 *value*
+path but not in the dynamic *scale* path.
+
+* **Dynamic fp8 scale on a NaN row was silently finite.** The per-row amax
+  reduction used `fmaxf` (and a plain `>` select in the warp shuffle), both of
+  which DROP a NaN operand — so a NaN-poisoned row, whose normalised values
+  and quantised bytes are all NaN, still got the 1e-12 amax floor and a scale
+  of ~2.2e-15 instead of NaN. The eager composite (`torch.amax`) propagates
+  NaN, so the kernel and its documented "numerically identical" fallback
+  disagreed. The amax accumulation now runs as an integer max over the float
+  bit patterns of `|y|` (for non-negative floats, IEEE ordering equals integer
+  ordering and every NaN pattern compares above +inf — branch-free NaN
+  propagation at no extra memory traffic), the warp reduction and the
+  `scale_ub`/floor clamps propagate NaN explicitly, and a regression test
+  pins values, scale, and the clean-row bytes around a poisoned row in all
+  three dtypes.
+* Measured cost of the correct semantics: ~2–4 % kernel time on the two
+  fp8-dynamic ops only (the amax pass gains one integer-max per element);
+  every other op is untouched. This release's benchmark data re-measures the
+  fp8 claims; the tightest one ("≥ 1× vs the compiled chain at every shape")
+  still holds.
+
 ## 0.4.1 — 2026‑08‑24 — post-release integrity audit fixes
 
 An adversarial audit of the pushed v0.4.0 (claims-vs-data, kernel review,

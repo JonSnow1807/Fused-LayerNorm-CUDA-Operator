@@ -83,8 +83,13 @@ struct EpiFp8Dynamic {
   static constexpr bool kNeedsRowMax = true;
   __device__ __forceinline__ float load_inv_scale() const { return 1.f; }  // replaced per row
   __device__ __forceinline__ float finalize_scale(float amax, int64_t row) const {
-    if (scale_ub > 0.f) amax = fminf(amax, scale_ub);
-    const float scale = fmaxf(amax, 1e-12f) / 448.f;
+    // A NaN amax (any NaN in the row) must poison the scale like torch.amax
+    // does in the eager composite; fminf/fmaxf would silently drop it.
+    if (!isnan(amax)) {
+      if (scale_ub > 0.f) amax = fminf(amax, scale_ub);
+      amax = fmaxf(amax, 1e-12f);
+    }
+    const float scale = amax / 448.f;
     scale_out[row] = scale;
     return 1.f / scale;
   }

@@ -122,7 +122,11 @@ __global__ void norm_fwd_kernel(const scalar_t* __restrict__ input,
   float inv_scale = epi.load_inv_scale();
   if constexpr (Epi::kNeedsRowMax) {
     __shared__ float s_inv_scale;
-    float amax = 0.f;
+    // |y| >= 0, so IEEE ordering equals integer ordering on the raw bits, and
+    // every NaN pattern compares above +inf: integer max over the bit
+    // patterns is a branch-free NaN-PROPAGATING amax (fmaxf would drop NaN,
+    // giving a poisoned row a tiny finite scale; torch.amax propagates).
+    int amax_bits = 0;
     for (int64_t i = tid; i < N; i += stride) {
       acc_t v = static_cast<acc_t>(SRC[i]);
       if constexpr (kRMS) {
@@ -134,10 +138,11 @@ __global__ void norm_fwd_kernel(const scalar_t* __restrict__ input,
       if constexpr (!kRMS) {
         if (beta) v += static_cast<acc_t>(beta[i]);
       }
-      const float y_s = static_cast<float>(static_cast<scalar_t>(v));
-      amax = fmaxf(amax, fabsf(y_s));
+      const float y_s = fabsf(static_cast<float>(static_cast<scalar_t>(v)));
+      amax_bits = max(amax_bits, __float_as_int(y_s));
     }
-    amax = blockReduceMax<float>(amax);
+    float amax = __int_as_float(amax_bits);
+    amax = blockReduceMax<float>(amax);  // maxNanPropagate keeps NaN across threads
     if (tid == 0) s_inv_scale = epi.finalize_scale(amax, row);
     __syncthreads();
     inv_scale = s_inv_scale;
@@ -255,7 +260,11 @@ __global__ void norm_fwd_vec_kernel(const scalar_t* __restrict__ input,
   float inv_scale = epi.load_inv_scale();
   if constexpr (Epi::kNeedsRowMax) {
     __shared__ float s_inv_scale;
-    float amax = 0.f;
+    // |y| >= 0, so IEEE ordering equals integer ordering on the raw bits, and
+    // every NaN pattern compares above +inf: integer max over the bit
+    // patterns is a branch-free NaN-PROPAGATING amax (fmaxf would drop NaN,
+    // giving a poisoned row a tiny finite scale; torch.amax propagates).
+    int amax_bits = 0;
     for (int64_t i = tid; i < nvec; i += stride) {
       const V z = SRC[i];
       V gv, bv;
@@ -275,10 +284,12 @@ __global__ void norm_fwd_vec_kernel(const scalar_t* __restrict__ input,
         if constexpr (!kRMS) {
           if (beta) v += static_cast<acc_t>(bv.v[k]);
         }
-        amax = fmaxf(amax, fabsf(static_cast<float>(static_cast<scalar_t>(v))));
+        const float y_s = fabsf(static_cast<float>(static_cast<scalar_t>(v)));
+        amax_bits = max(amax_bits, __float_as_int(y_s));
       }
     }
-    amax = blockReduceMax<float>(amax);
+    float amax = __int_as_float(amax_bits);
+    amax = blockReduceMax<float>(amax);  // maxNanPropagate keeps NaN across threads
     if (tid == 0) s_inv_scale = epi.finalize_scale(amax, row);
     __syncthreads();
     inv_scale = s_inv_scale;

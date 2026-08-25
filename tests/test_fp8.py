@@ -152,3 +152,41 @@ def test_opcheck_and_compile_fp8() -> None:
         assert explanation.graph_break_count == 0
         compiled = torch.compile(fn, fullgraph=True)
         torch.testing.assert_close(compiled(x, w), fn(x, w))
+
+
+# --------------------------------------------------------------------------- #
+# GPU: NaN semantics (kernel must match the eager composite exactly)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+@pytest.mark.parametrize("dtype", FP8_DTYPES, ids=str)
+def test_nan_poisons_values_and_dynamic_scale(dtype) -> None:
+    """A NaN input must surface as NaN — never quantise to a finite value.
+
+    Two independent kernel behaviours are on trial: the value path (SATFINITE
+    clamp must not turn NaN into ±448) and the dynamic-scale row-amax (fmaxf
+    silently DROPS NaN, so a naive reduction gives a NaN row a tiny finite
+    scale; torch.amax — the eager composite — propagates it).
+    """
+    x = _randn((6, 512), dtype)
+    x[2, 7] = float("nan")  # poisons row 2's stats, hence the whole row
+    w, _ = _affine(512, dtype)
+    with torch.no_grad():
+        out, s = rms_norm_fp8(x, (512,), w, 1e-6)
+        assert torch.isnan(s[2]).all()  # scale propagates, not the 1e-12 floor
+        assert torch.isnan(out[2].float()).all()
+        # clean rows are untouched by the poisoned one
+        y = rms_norm(x, (512,), w, 1e-6)
+        clean = [i for i in range(6) if i != 2]
+        ref_s = y[clean].float().abs().amax(-1, keepdim=True) / 448.0
+        assert ((s[clean] - ref_s).abs() <= ref_s * 1e-6 + 1e-12).all()
+        assert torch.equal(_bytes(out[clean]), _bytes(_quantize_ref(y[clean], s[clean])))
+        # static mode: value passthrough alone (finite scale, NaN value)
+        out_st, _ = rms_norm_fp8(x, (512,), w, 1e-6, scale=torch.tensor([0.02], device=DEVICE))
+        assert torch.isnan(out_st[2].float()).all()
+        assert torch.isfinite(out_st[clean].float()).all()
+        # scale_ub must not un-poison the scale either
+        _, s_ub = rms_norm_fp8(x, (512,), w, 1e-6, scale_ub=1.0)
+        assert torch.isnan(s_ub[2]).all()
