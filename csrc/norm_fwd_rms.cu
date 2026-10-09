@@ -106,6 +106,9 @@ void rmsnorm_fwd_cuda_launch(const at::Tensor& input2d,
   }
   const bool vec = fused_norm::choose_vec(vectorisable, M, N);
   const int threads = fused_norm::choose_block_size(vec, N, vw);
+  // Few-row launches on sm_90 take the register-resident kernel for every epilogue alike.
+  const bool small_m = fused_norm::choose_small_m_rows(
+      vectorisable, M, N, vw, at::cuda::getCurrentDeviceProperties()->major);
 
   const dim3 grid(static_cast<unsigned int>(M));
   const dim3 block(static_cast<unsigned int>(threads));
@@ -115,6 +118,26 @@ void rmsnorm_fwd_cuda_launch(const at::Tensor& input2d,
         using acc_t = at::acc_type<scalar_t, /*is_cuda=*/true>;
 
         auto dispatch_fused = [&](auto epi_functor, auto* y_ptr) {
+          if (small_m) {
+            const dim3 sblock(fused_norm::small_m_block_size(N, vw));
+            const scalar_t* g =
+                weight_or_undef.defined() ? weight_or_undef.data_ptr<scalar_t>() : nullptr;
+            acc_t* rstd = rstd_or_undef.defined() ? rstd_or_undef.data_ptr<acc_t>() : nullptr;
+            if (fused_add) {
+              fused_norm::norm_fwd_rms_rowreg_kernel<scalar_t, acc_t, /*kFusedAdd=*/true>
+                  <<<grid, sblock, 0, stream>>>(
+                      input2d.data_ptr<scalar_t>(), residual_in2d_or_undef.data_ptr<scalar_t>(),
+                      residual_out2d_or_undef.data_ptr<scalar_t>(), y_ptr, g, rstd, N,
+                      static_cast<acc_t>(eps), epi_functor);
+            } else {
+              fused_norm::norm_fwd_rms_rowreg_kernel<scalar_t, acc_t, /*kFusedAdd=*/false>
+                  <<<grid, sblock, 0, stream>>>(input2d.data_ptr<scalar_t>(), nullptr, nullptr,
+                                                y_ptr, g, rstd, N, static_cast<acc_t>(eps),
+                                                epi_functor);
+            }
+            C10_CUDA_KERNEL_LAUNCH_CHECK();
+            return;
+          }
           if (fused_add) {
             launch_rms_kernel<scalar_t, acc_t, /*kFusedAdd=*/true>(
                 input2d, residual_in2d_or_undef, weight_or_undef, y_ptr,

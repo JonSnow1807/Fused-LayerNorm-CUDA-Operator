@@ -456,4 +456,122 @@ __global__ void __launch_bounds__(kWarpSize * kWarpRowsPerBlock)
   }
 }
 
+// ---------------------------------------------------------------------------
+// RMSNorm forward for few-row launches on sm_90 (see choose_small_m_rows), any
+// epilogue: one block per row, at most kSmallMMaxThreads threads, each holding
+// at most kSmallMVecs 16-byte vectors of the row in registers. Every element is
+// read once and normalised and rounded once; the sum of squares and the row
+// max are each finished with one barrier (all-reduce). Plain, fused-add and fp8
+// launches of the same shape run this same code, so the fused/quantised outputs
+// stay byte-identical to the plain output they are defined against.
+// ---------------------------------------------------------------------------
+template <typename scalar_t, typename acc_t, bool kFusedAdd, typename Epi>
+__global__ void __launch_bounds__(kSmallMMaxThreads)
+    norm_fwd_rms_rowreg_kernel(const scalar_t* __restrict__ input,
+                               const scalar_t* residual_in,  // aliasable pair: see above
+                               scalar_t* residual_out,
+                               typename Epi::out_t* __restrict__ output,
+                               const scalar_t* __restrict__ gamma,  // null ok
+                               acc_t* __restrict__ rstd_out,       // null ok; [M]
+                               int64_t N,  // multiple of kVecWidth, N / kW <= blockDim.x * kSmallMVecs
+                               acc_t eps,
+                               Epi epi) {
+  using V = Vec<scalar_t>;
+  constexpr int kW = kVecWidth<scalar_t>;
+  constexpr bool kSameSizeOut = sizeof(typename Epi::out_t) == sizeof(scalar_t);
+  const int64_t row = blockIdx.x;
+  const int tid = threadIdx.x;
+  const int stride = blockDim.x;
+  const int64_t nvec = N / kW;
+
+  const V* X = reinterpret_cast<const V*>(input + row * N);
+  const V* R = kFusedAdd ? reinterpret_cast<const V*>(residual_in + row * N) : nullptr;
+  V* Z = kFusedAdd ? reinterpret_cast<V*>(residual_out + row * N) : nullptr;
+  const V* G = reinterpret_cast<const V*>(gamma);
+  typename Epi::out_t* Y = output + row * N;
+  __shared__ acc_t s_sq_part[kSmallMMaxThreads / kWarpSize];
+  __shared__ float s_amax_part[kSmallMMaxThreads / kWarpSize];
+
+  V z[kSmallMVecs];
+  acc_t sq = 0;
+#pragma unroll
+  for (int j = 0; j < kSmallMVecs; ++j) {
+    const int64_t i = tid + static_cast<int64_t>(j) * stride;
+    if (i < nvec) {
+      if constexpr (kFusedAdd) {
+        const V x = X[i];
+        const V r = R[i];
+#pragma unroll
+        for (int k = 0; k < kW; ++k) {
+          z[j].v[k] = static_cast<scalar_t>(static_cast<acc_t>(x.v[k]) +
+                                            static_cast<acc_t>(r.v[k]));
+        }
+        Z[i] = z[j];
+      } else {
+        z[j] = X[i];
+      }
+#pragma unroll
+      for (int k = 0; k < kW; ++k) {
+        const acc_t v = static_cast<acc_t>(z[j].v[k]);  // fused-add: the ROUNDED value
+        sq += v * v;
+      }
+    }
+  }
+  sq = allReduceSum<acc_t>(sq, s_sq_part);
+  const acc_t rstd = rsqrt(sq / static_cast<acc_t>(N) + eps);
+  if (tid == 0 && rstd_out != nullptr) rstd_out[row] = rstd;
+
+  // Normalise, apply gamma and round to scalar_t once (the rounded value replaces the
+  // input in registers); the dynamic-fp8 epilogue also takes the row max of it.
+  int amax_bits = 0;
+#pragma unroll
+  for (int j = 0; j < kSmallMVecs; ++j) {
+    const int64_t i = tid + static_cast<int64_t>(j) * stride;
+    if (i < nvec) {
+      V gv;
+      if (G) gv = G[i];
+#pragma unroll
+      for (int k = 0; k < kW; ++k) {
+        acc_t v = static_cast<acc_t>(z[j].v[k]);
+        v *= rstd;
+        if (G) v *= static_cast<acc_t>(gv.v[k]);
+        z[j].v[k] = static_cast<scalar_t>(v);
+        if constexpr (Epi::kNeedsRowMax) {
+          amax_bits = max(amax_bits, __float_as_int(fabsf(static_cast<float>(z[j].v[k]))));
+        }
+      }
+    }
+  }
+  float inv_scale = epi.load_inv_scale();
+  if constexpr (Epi::kNeedsRowMax) {
+    const float amax = allReduceMax<float>(__int_as_float(amax_bits), s_amax_part);
+    inv_scale = epi.finalize_scale(amax, row, /*writer=*/tid == 0);
+  }
+
+#pragma unroll
+  for (int j = 0; j < kSmallMVecs; ++j) {
+    const int64_t i = tid + static_cast<int64_t>(j) * stride;
+    if (i < nvec) {
+      if constexpr (kSameSizeOut) {
+        V y;
+#pragma unroll
+        for (int k = 0; k < kW; ++k) y.v[k] = epi.store(static_cast<acc_t>(z[j].v[k]), inv_scale);
+        reinterpret_cast<V*>(Y)[i] = y;
+      } else {
+        // One kW-byte store per vector: in these few-row launches the stores all issue at the end of the
+        // kernel, so kW single-byte stores per vector would sit on the critical path. Aligned: the output
+        // base is 16-byte aligned and N % kW == 0.
+        static_assert(sizeof(typename Epi::out_t) == 1, "narrow epilogues store 1-byte elements");
+        Packed<kW> pk;
+#pragma unroll
+        for (int k = 0; k < kW; ++k) {
+          const typename Epi::out_t q = epi.store(static_cast<acc_t>(z[j].v[k]), inv_scale);
+          pk.b[k] = reinterpret_cast<const unsigned char&>(q);
+        }
+        *reinterpret_cast<Packed<kW>*>(Y + i * kW) = pk;
+      }
+    }
+  }
+}
+
 }  // namespace fused_norm
