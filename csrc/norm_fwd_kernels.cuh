@@ -335,4 +335,125 @@ __global__ void norm_fwd_vec_kernel(const scalar_t* __restrict__ input,
   }
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic-scale fp8 RMSNorm, one warp per row, for the rows norm_fwd_vec_kernel
+// would run in a 64-thread block (N / kVecWidth <= 128; by default also
+// N >= 128 and M >= 256, while FUSED_LAYERNORM_FORCE_KERNEL=vec admits any M
+// and rows of a single vector). On sm_90 the
+// block-per-row kernel measured instruction- and barrier-bound there: three
+// passes over the row and four block barriers per row of at most 2 KB. Here a
+// warp keeps its part of the row in registers, normalises and rounds each
+// element once, and reduces with shuffles only (no shared memory, no barrier).
+//
+// Bitwise contract: the sum of squares is accumulated exactly as the 64-thread
+// block does it, so rstd - and therefore every output byte - equals the plain
+// rms_norm launch for the same row. Lane l owns the vectors of block threads
+// l ({l, l + 64}) and l + 32 ({l + 32, l + 96}) and keeps their partial sums
+// in two separate chains in the block's order; each chain is butterfly-reduced
+// over the lanes exactly like the block's warp 0 and warp 1, and the two
+// results are added as the block's cross-warp step does (w0 + w1; the zero
+// padding there is exact). The row maximum is order-independent.
+// ---------------------------------------------------------------------------
+constexpr int kWarpRowsPerBlock = 4;
+constexpr int kWarpRowReplacedThreads = 2 * kWarpSize;  // block size of the launch this replaces
+
+template <typename scalar_t, typename acc_t, bool kFusedAdd, typename Epi>
+__global__ void __launch_bounds__(kWarpSize * kWarpRowsPerBlock)
+    norm_fwd_rms_fp8dyn_warp_kernel(const scalar_t* __restrict__ input,
+                                    const scalar_t* residual_in,  // aliasable pair: see above
+                                    scalar_t* residual_out,
+                                    typename Epi::out_t* __restrict__ output,
+                                    const scalar_t* __restrict__ gamma,  // null ok
+                                    acc_t* __restrict__ rstd_out,       // null ok; [M]
+                                    int64_t M,
+                                    int64_t N,  // multiple of kVecWidth<scalar_t>, N / kW <= 128
+                                    acc_t eps,
+                                    Epi epi) {
+  using V = Vec<scalar_t>;
+  constexpr int kW = kVecWidth<scalar_t>;
+  constexpr int kB = kWarpRowReplacedThreads;
+  const int lane = threadIdx.x % kWarpSize;
+  const int64_t row =
+      static_cast<int64_t>(blockIdx.x) * kWarpRowsPerBlock + threadIdx.x / kWarpSize;
+  if (row >= M) return;  // warp-uniform, and nothing below synchronises across warps
+  const int64_t nvec = N / kW;
+
+  const V* X = reinterpret_cast<const V*>(input + row * N);
+  const V* R = kFusedAdd ? reinterpret_cast<const V*>(residual_in + row * N) : nullptr;
+  V* Z = kFusedAdd ? reinterpret_cast<V*>(residual_out + row * N) : nullptr;
+  const V* G = reinterpret_cast<const V*>(gamma);
+  typename Epi::out_t* Y = output + row * N;
+
+  // Slots 0, 1: block thread `lane`; slots 2, 3: block thread `lane + 32`.
+  const int64_t idx[4] = {lane, lane + kB, lane + kWarpSize, lane + kWarpSize + kB};
+  V z[4];
+#pragma unroll
+  for (int s = 0; s < 4; ++s) {
+    if (idx[s] < nvec) {
+      if constexpr (kFusedAdd) {
+        const V x = X[idx[s]];
+        const V r = R[idx[s]];
+#pragma unroll
+        for (int k = 0; k < kW; ++k) {
+          z[s].v[k] = static_cast<scalar_t>(static_cast<acc_t>(x.v[k]) +
+                                            static_cast<acc_t>(r.v[k]));
+        }
+        Z[idx[s]] = z[s];
+      } else {
+        z[s] = X[idx[s]];
+      }
+    }
+  }
+  acc_t sq_lo = 0;  // partial of block thread lane
+  acc_t sq_hi = 0;  // partial of block thread lane + 32
+#pragma unroll
+  for (int s = 0; s < 4; ++s) {
+    if (idx[s] < nvec) {
+#pragma unroll
+      for (int k = 0; k < kW; ++k) {
+        const acc_t v = static_cast<acc_t>(z[s].v[k]);  // fused-add: the ROUNDED value
+        if (s < 2) {
+          sq_lo += v * v;
+        } else {
+          sq_hi += v * v;
+        }
+      }
+    }
+  }
+  const acc_t sq = warpReduceSum<acc_t>(sq_lo) + warpReduceSum<acc_t>(sq_hi);
+  const acc_t rstd = rsqrt(sq / static_cast<acc_t>(N) + eps);
+  if (lane == 0 && rstd_out != nullptr) rstd_out[row] = rstd;
+
+  // Normalise, apply gamma and round to scalar_t once; amax over the bit
+  // patterns as in the generic kernel (NaN-propagating integer max).
+  int amax_bits = 0;
+#pragma unroll
+  for (int s = 0; s < 4; ++s) {
+    if (idx[s] < nvec) {
+      V gv;
+      if (G) gv = G[idx[s]];
+#pragma unroll
+      for (int k = 0; k < kW; ++k) {
+        acc_t v = static_cast<acc_t>(z[s].v[k]);
+        v *= rstd;
+        if (G) v *= static_cast<acc_t>(gv.v[k]);
+        z[s].v[k] = static_cast<scalar_t>(v);
+        amax_bits = max(amax_bits, __float_as_int(fabsf(static_cast<float>(z[s].v[k]))));
+      }
+    }
+  }
+  const float amax = warpReduceMax<float>(__int_as_float(amax_bits));
+  const float inv_scale = epi.finalize_scale(amax, row, /*writer=*/lane == 0);
+
+#pragma unroll
+  for (int s = 0; s < 4; ++s) {
+    if (idx[s] < nvec) {
+#pragma unroll
+      for (int k = 0; k < kW; ++k) {
+        Y[idx[s] * kW + k] = epi.store(static_cast<acc_t>(z[s].v[k]), inv_scale);
+      }
+    }
+  }
+}
+
 }  // namespace fused_norm

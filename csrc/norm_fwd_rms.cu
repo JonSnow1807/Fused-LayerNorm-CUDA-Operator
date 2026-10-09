@@ -154,7 +154,44 @@ void rmsnorm_fwd_cuda_launch(const at::Tensor& input2d,
             fused_norm::EpiFp8Dynamic<scalar_t, acc_t> e{
                 epi_params.scale_out.data_ptr<float>(),
                 static_cast<float>(epi_params.scale_ub)};
-            dispatch_fused(e, y8);
+            // Fused-add rows stay on the block kernel up to one wave of 64-thread blocks
+            // (multiProcessorCount x maxBlocksPerMultiProcessor; 4224 rows on an H200). Measured on
+            // an H200, the warp kernel was slower for fused-add at small M (N = 1024: +10..18% at 256
+            // rows, +1..5% at 1024) and faster from 2048 rows (-10..-36%), so this bound is a
+            // conservative threshold, not the measured crossover.
+            const cudaDeviceProp* prop = at::cuda::getCurrentDeviceProperties();
+            const int64_t one_wave_rows =
+                static_cast<int64_t>(prop->multiProcessorCount) * prop->maxBlocksPerMultiProcessor;
+            // The warp kernel reproduces the 64-thread block's summation order only for rows of at
+            // most two vectors per block thread; require that explicitly rather than relying on
+            // choose_block_size returning 64 only for such rows.
+            const int64_t nvec_row = N / vw;
+            if (vec && threads == fused_norm::kWarpRowReplacedThreads && nvec_row >= 1 &&
+                nvec_row <= 2 * fused_norm::kWarpRowReplacedThreads &&
+                (!fused_add || M > one_wave_rows)) {
+              // One warp per row (see norm_fwd_rms_fp8dyn_warp_kernel): same bytes as the
+              // 64-thread block this launch would otherwise use.
+              const dim3 wgrid(static_cast<unsigned int>(
+                  (M + fused_norm::kWarpRowsPerBlock - 1) / fused_norm::kWarpRowsPerBlock));
+              const dim3 wblock(fused_norm::kWarpSize * fused_norm::kWarpRowsPerBlock);
+              const scalar_t* g =
+                  weight_or_undef.defined() ? weight_or_undef.data_ptr<scalar_t>() : nullptr;
+              acc_t* rstd = rstd_or_undef.defined() ? rstd_or_undef.data_ptr<acc_t>() : nullptr;
+              if (fused_add) {
+                fused_norm::norm_fwd_rms_fp8dyn_warp_kernel<scalar_t, acc_t, /*kFusedAdd=*/true>
+                    <<<wgrid, wblock, 0, stream>>>(
+                        input2d.data_ptr<scalar_t>(), residual_in2d_or_undef.data_ptr<scalar_t>(),
+                        residual_out2d_or_undef.data_ptr<scalar_t>(), y8, g, rstd, M, N,
+                        static_cast<acc_t>(eps), e);
+              } else {
+                fused_norm::norm_fwd_rms_fp8dyn_warp_kernel<scalar_t, acc_t, /*kFusedAdd=*/false>
+                    <<<wgrid, wblock, 0, stream>>>(input2d.data_ptr<scalar_t>(), nullptr, nullptr,
+                                                   y8, g, rstd, M, N, static_cast<acc_t>(eps), e);
+              }
+              C10_CUDA_KERNEL_LAUNCH_CHECK();
+            } else {
+              dispatch_fused(e, y8);
+            }
           }
           return;
         }
