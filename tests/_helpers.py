@@ -74,6 +74,15 @@ def _randn(shape: Tuple[int, ...], dtype: torch.dtype, device: str = DEVICE) -> 
     return torch.randn(shape, dtype=gen_dtype, device=device).to(dtype)
 
 
+def _misaligned(t: torch.Tensor) -> torch.Tensor:
+    """A contiguous copy of ``t`` starting one element into its allocation, so its
+    data_ptr is not 16-byte aligned (like a ``base[1:]`` view)."""
+    out = torch.empty(t.numel() + 1, dtype=t.dtype, device=t.device)[1:].view(t.shape)
+    out.copy_(t)
+    assert out.is_contiguous() and out.data_ptr() % 16 != 0
+    return out
+
+
 def _affine(
     n: int, dtype: torch.dtype, device: str = DEVICE
 ) -> Tuple[torch.Tensor, torch.Tensor]:

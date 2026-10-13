@@ -17,7 +17,7 @@ measured claim.
 > number quoted here points at a committed file under
 > [`benchmarks/results/`](benchmarks/results/) whose JSON records the git
 > commit it was produced from with a clean working tree, and the full test
-> suite (currently 289 tests) is run on hardware before any release. v0.3.0
+> suite (currently 335 tests) is run on hardware before any release. v0.3.0
 > (2026‑08‑20) added the first kernel-time measurements; v0.4.0 turned the
 > single forward-only kernel into the library described below; v0.4.1 and
 > v0.4.2 are post-release patches for defects found by re-auditing and
@@ -62,7 +62,10 @@ paths (it exists so `torch.autograd.gradcheck` can run). torch ≥ 2.4.
 * Fused-add computes `new_residual = round(x + residual)` — rounded to the
   input dtype exactly once — and normalises the *rounded* sum, so
   `out == plain_norm(new_residual)` holds **bitwise**: the fused op is
-  indistinguishable from the unfused composite.
+  indistinguishable from the unfused composite. This holds for any input
+  alignment: if a contiguous but misaligned `x` or `residual` (a `base[1:]`
+  view) would put the fused call on a different kernel than the composite,
+  the call runs the composite itself (the add, then the plain norm).
 * fp8 outputs equal quantising the plain norm output with
   `round_e4m3(clamp(y * (1/scale), ±448))` — the reciprocal multiply is part
   of the byte-level contract; `scale` is the dequant scale
@@ -272,7 +275,7 @@ csrc/                       kernels: layernorm_cuda_kernel.cu (v0.3.0 LN kernels
                             norm_{reduce,vec,epilogue,dispatch}.cuh, bindings.cpp, layernorm.h
 fused_layernorm/            package: layernorm.py, rms_norm.py, fused_add.py, quant.py,
                             _ops.py (torch.library custom ops + autograd), _common.py
-tests/                      289 tests: per-op suites, gradcheck (fp64), bitwise contracts,
+tests/                      335 tests: per-op suites, gradcheck (fp64), bitwise contracts,
                             opcheck, torch.compile fullgraph, determinism, NaN semantics;
                             fuzz_contracts.py (randomized contract fuzz, run explicitly)
 benchmarks/                 bench_layernorm.py (LayerNorm), bench_norms.py (the op family),
