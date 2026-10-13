@@ -95,20 +95,36 @@ void rmsnorm_fwd_cuda_launch(const at::Tensor& input2d,
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   const int64_t vw = 16 / input2d.element_size();
-  bool vectorisable =
-      (N % vw == 0) && fused_norm::aligned16(input2d.data_ptr()) &&
-      fused_norm::aligned16(output2d.data_ptr()) &&
-      (!weight_or_undef.defined() || fused_norm::aligned16(weight_or_undef.data_ptr()));
+  const int device_major = at::cuda::getCurrentDeviceProperties()->major;
+  // Vectorisable layout for a plain launch normalising `in` into output2d.
+  const auto plain_vectorisable = [&](const at::Tensor& in) {
+    return (N % vw == 0) && fused_norm::aligned16(in.data_ptr()) &&
+           fused_norm::aligned16(output2d.data_ptr()) &&
+           (!weight_or_undef.defined() || fused_norm::aligned16(weight_or_undef.data_ptr()));
+  };
+  bool vectorisable = plain_vectorisable(input2d);
   if (fused_add) {
     vectorisable = vectorisable &&
                    fused_norm::aligned16(residual_in2d_or_undef.data_ptr()) &&
                    fused_norm::aligned16(residual_out2d_or_undef.data_ptr());
+    // Fused-add composite contract (norm_dispatch.cuh): if a misaligned input or residual_in
+    // changes the kernel family, run the composite so out == plain_norm(residual_out) bitwise.
+    const bool composite = plain_vectorisable(residual_out2d_or_undef);
+    if (fused_norm::choose_vec(composite, M, N) != fused_norm::choose_vec(vectorisable, M, N) ||
+        fused_norm::choose_small_m_rows(composite, M, N, vw, device_major) !=
+            fused_norm::choose_small_m_rows(vectorisable, M, N, vw, device_major)) {
+      at::add_out(residual_out2d_or_undef, input2d, residual_in2d_or_undef);
+      at::Tensor undef;
+      rmsnorm_fwd_cuda_launch(residual_out2d_or_undef, /*residual_in=*/undef, weight_or_undef,
+                              output2d, /*residual_out=*/undef, rstd_or_undef, eps, epi,
+                              epi_params);
+      return;
+    }
   }
   const bool vec = fused_norm::choose_vec(vectorisable, M, N);
   const int threads = fused_norm::choose_block_size(vec, N, vw);
   // Few-row launches on sm_90 take the register-resident kernel for every epilogue alike.
-  const bool small_m = fused_norm::choose_small_m_rows(
-      vectorisable, M, N, vw, at::cuda::getCurrentDeviceProperties()->major);
+  const bool small_m = fused_norm::choose_small_m_rows(vectorisable, M, N, vw, device_major);
 
   const dim3 grid(static_cast<unsigned int>(M));
   const dim3 block(static_cast<unsigned int>(threads));

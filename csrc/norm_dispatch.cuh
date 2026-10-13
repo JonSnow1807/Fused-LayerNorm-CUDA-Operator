@@ -79,6 +79,13 @@ inline bool choose_small_m_rows(bool vectorisable, int64_t M, int64_t N, int64_t
          N / vec_width <= threads * kSmallMVecs;
 }
 
+// Fused-add composite contract: a fused-add launch needs input, residual_in and residual_out
+// 16-byte aligned for the vectorised kernels, while the composite plain_norm(residual_out) checks
+// residual_out alone. When that difference would move the fused launch to another kernel family
+// (another summation order) than the composite, the launcher runs the composite instead:
+// residual_out = round(input + residual_in), then the plain launch on residual_out. So
+// out == plain_norm(new_residual) holds bitwise for every alignment, and launches whose families
+// already agree are unchanged.
 inline bool choose_vec(bool vectorisable, int64_t M, int64_t N) {
   const bool vec = vectorisable && (N >= 128) && (M >= kVecMinRows);
   return apply_force_kernel_env(vec, vectorisable);

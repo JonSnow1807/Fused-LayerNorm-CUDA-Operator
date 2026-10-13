@@ -104,15 +104,28 @@ void layernorm_fp8_fwd_cuda_launch(const at::Tensor& input2d,
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   const int64_t vw = 16 / input2d.element_size();
-  bool vectorisable =
-      (N % vw == 0) && fused_norm::aligned16(input2d.data_ptr()) &&
-      fused_norm::aligned16(output2d.data_ptr()) &&
-      (!weight_or_undef.defined() || fused_norm::aligned16(weight_or_undef.data_ptr())) &&
-      (!bias_or_undef.defined() || fused_norm::aligned16(bias_or_undef.data_ptr()));
+  // Vectorisable layout for a plain launch normalising `in` into output2d.
+  const auto plain_vectorisable = [&](const at::Tensor& in) {
+    return (N % vw == 0) && fused_norm::aligned16(in.data_ptr()) &&
+           fused_norm::aligned16(output2d.data_ptr()) &&
+           (!weight_or_undef.defined() || fused_norm::aligned16(weight_or_undef.data_ptr())) &&
+           (!bias_or_undef.defined() || fused_norm::aligned16(bias_or_undef.data_ptr()));
+  };
+  bool vectorisable = plain_vectorisable(input2d);
   if (fused_add) {
     vectorisable = vectorisable &&
                    fused_norm::aligned16(residual_in2d_or_undef.data_ptr()) &&
                    fused_norm::aligned16(residual_out2d_or_undef.data_ptr());
+    // Fused-add composite contract (norm_dispatch.cuh).
+    if (fused_norm::choose_vec(plain_vectorisable(residual_out2d_or_undef), M, N) !=
+        fused_norm::choose_vec(vectorisable, M, N)) {
+      at::add_out(residual_out2d_or_undef, input2d, residual_in2d_or_undef);
+      at::Tensor undef;
+      layernorm_fp8_fwd_cuda_launch(residual_out2d_or_undef, /*residual_in=*/undef,
+                                    weight_or_undef, bias_or_undef, output2d,
+                                    /*residual_out=*/undef, eps, epi, epi_params);
+      return;
+    }
   }
   const bool vec = fused_norm::choose_vec(vectorisable, M, N);
   const int threads = fused_norm::choose_block_size(vec, N, vw);
@@ -255,13 +268,30 @@ void fused_add_layernorm_fwd_cuda_launch(const at::Tensor& input2d,
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   const int64_t vw = 16 / input2d.element_size();
-  const bool vectorisable =
-      (N % vw == 0) && fused_norm::aligned16(input2d.data_ptr()) &&
-      fused_norm::aligned16(output2d.data_ptr()) &&
-      fused_norm::aligned16(residual_in2d.data_ptr()) &&
-      fused_norm::aligned16(residual_out2d.data_ptr()) &&
-      (!weight_or_undef.defined() || fused_norm::aligned16(weight_or_undef.data_ptr())) &&
-      (!bias_or_undef.defined() || fused_norm::aligned16(bias_or_undef.data_ptr()));
+  // Vectorisable layout for a plain launch normalising `in` into output2d.
+  const auto plain_vectorisable = [&](const at::Tensor& in) {
+    return (N % vw == 0) && fused_norm::aligned16(in.data_ptr()) &&
+           fused_norm::aligned16(output2d.data_ptr()) &&
+           (!weight_or_undef.defined() || fused_norm::aligned16(weight_or_undef.data_ptr())) &&
+           (!bias_or_undef.defined() || fused_norm::aligned16(bias_or_undef.data_ptr()));
+  };
+  const bool vectorisable = plain_vectorisable(input2d) &&
+                            fused_norm::aligned16(residual_in2d.data_ptr()) &&
+                            fused_norm::aligned16(residual_out2d.data_ptr());
+  // Fused-add composite contract (norm_dispatch.cuh). The composite is layer_norm, whose
+  // training forward also writes mean and rstd.
+  if (fused_norm::choose_vec(plain_vectorisable(residual_out2d), M, N) !=
+      fused_norm::choose_vec(vectorisable, M, N)) {
+    at::add_out(residual_out2d, input2d, residual_in2d);
+    if (mean_or_undef.defined()) {
+      layernorm_fwd_train_cuda_launch(residual_out2d, weight_or_undef, bias_or_undef, output2d,
+                                      mean_or_undef, rstd_or_undef, eps);
+    } else {
+      layernorm_cuda_launch(residual_out2d, weight_or_undef, bias_or_undef, output2d, eps,
+                            NormEpilogue::kNone);
+    }
+    return;
+  }
   const bool vec = fused_norm::choose_vec(vectorisable, M, N);
   const int threads = fused_norm::choose_block_size(vec, N, vw);
 
