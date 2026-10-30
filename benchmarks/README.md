@@ -15,9 +15,14 @@ provenance), and committed result files (`results/`).
   baseline run) for the v0.3.0 kernels on an A100‑SXM4‑40GB, and
   [`results/2026-08-25_a100-40gb_v050_ops/`](results/2026-08-25_a100-40gb_v050_ops/README.md)
   holds the **current** `bench_norms.py` output for the full op family on the
-  A100, and
+  A100,
   [`results/2026-08-25_h100-80gb_v050_ops/`](results/2026-08-25_h100-80gb_v050_ops/README.md)
-  the H100 validation run. The superseded generations are kept as history
+  the H100 validation run, and
+  [`results/2026-10-29_h100-nvl_v060_fastpaths/`](results/2026-10-29_h100-nvl_v060_fastpaths/README.md)
+  the v0.6.0 A/B of the Hopper RMSNorm fast paths (PR #2 branch vs v0.5.0,
+  the same `bench_norms.py` invocation for both builds on an H100 NVL;
+  clocks could not be locked and `git_dirty = true`, both explained there).
+  The superseded generations are kept as history
   with banners: [`results/2026-08-24_a100-40gb_v040_ops/`](results/2026-08-24_a100-40gb_v040_ops/README.md)
   (v0.4.0), [`results/2026-08-24_a100-40gb_v041_ops/`](results/2026-08-24_a100-40gb_v041_ops/README.md)
   (v0.4.1, unlocked clocks) and
