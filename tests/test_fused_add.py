@@ -26,7 +26,7 @@ from fused_layernorm import (
     rms_norm,
 )
 
-from _helpers import ALL_DTYPES, DEVICE, _affine, _randn, requires_cuda_ext
+from _helpers import ALL_DTYPES, DEVICE, _affine, _misaligned, _randn, requires_cuda_ext
 
 FUSED_SHAPES = [(1, 1), (17, 1023), (64, 1024), (3, 5, 64), (512, 512), (2048, 4096)]
 
@@ -86,6 +86,53 @@ def test_bitwise_composite_equivalence(shape, dtype: torch.dtype) -> None:
     out2, z2 = fused_add_rms_norm(x, r, (n,), w, 1e-6)
     assert torch.equal(z2, x + r)
     assert torch.equal(out2, rms_norm(z2, (n,), w, 1e-6))
+
+
+# A misaligned input or residual must not change the kernel family relative to the composite,
+# which sees only new_residual's alignment. 192 rows take the register-resident kernel on sm_90,
+# 512 rows the vectorised kernel. An inplace call with a misaligned residual is not listed: its
+# new_residual is that residual, so the composite sees the same misalignment.
+MISALIGNED_CASES = [("input", False), ("residual", False), ("input", True)]
+MISALIGNED_IDS = ["input", "residual", "input-inplace"]
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+@pytest.mark.parametrize("dtype", ALL_DTYPES, ids=str)
+@pytest.mark.parametrize("rows", [192, 512])
+@pytest.mark.parametrize("which,inplace", MISALIGNED_CASES, ids=MISALIGNED_IDS)
+def test_bitwise_composite_equivalence_misaligned(which, inplace, rows, dtype) -> None:
+    """out == plain_norm(new_residual) bitwise when input or residual is not 16-byte aligned."""
+    x, r, w, b = _inputs((rows, 4096), dtype)
+    if which == "input":
+        x = _misaligned(x)
+    else:
+        r = _misaligned(r)
+
+    out, z = fused_add_layer_norm(x, r.clone() if inplace else r, (4096,), w, b, 1e-5,
+                                  inplace=inplace)
+    assert torch.equal(z, x + r)
+    assert torch.equal(out, layer_norm(z, (4096,), w, b, 1e-5))
+
+    out2, z2 = fused_add_rms_norm(x, r.clone() if inplace else r, (4096,), w, 1e-6,
+                                  inplace=inplace)
+    assert torch.equal(z2, x + r)
+    assert torch.equal(out2, rms_norm(z2, (4096,), w, 1e-6))
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+@pytest.mark.parametrize("rows", [192, 512])
+@pytest.mark.parametrize("which", ["input", "residual"])
+def test_grad_forward_matches_composite_misaligned(which, rows) -> None:
+    """The autograd forward keeps out bitwise equal to the composite for misaligned inputs."""
+    x, r, w, b = _inputs((rows, 4096), torch.float16)
+    x, r = (_misaligned(x), r) if which == "input" else (x, _misaligned(r))
+    xg, rg = x.requires_grad_(), r.requires_grad_()
+    out, z = fused_add_layer_norm(xg, rg, (4096,), w, b, 1e-5)
+    assert torch.equal(out, layer_norm(z, (4096,), w, b, 1e-5))
+    out2, z2 = fused_add_rms_norm(xg, rg, (4096,), w, 1e-6)
+    assert torch.equal(out2, rms_norm(z2, (4096,), w, 1e-6))
 
 
 @pytest.mark.cuda

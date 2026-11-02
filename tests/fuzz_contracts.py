@@ -50,6 +50,14 @@ def shapes(n: int):
         yield m, ncand[int(torch.randint(0, len(ncand), (1,)))]
 
 
+def _offset(t: torch.Tensor, k: int) -> torch.Tensor:
+    """``t`` copied ``k`` elements into a fresh allocation: still contiguous, but not 16-byte
+    aligned for k > 0 (like a ``base[1:]`` view)."""
+    if k == 0:
+        return t
+    return torch.empty(t.numel() + k, device=t.device, dtype=t.dtype)[k:].view(t.shape).copy_(t)
+
+
 def fuzz_fused_add(rounds: int) -> None:
     for i, (m, n) in enumerate(shapes(rounds)):
         dt = DTYPES[i % 3]
@@ -57,15 +65,29 @@ def fuzz_fused_add(rounds: int) -> None:
         r = torch.randn(m, n, device="cuda", dtype=dt)
         w = torch.rand(n, device="cuda", dtype=dt) + 0.5
         b = torch.randn(n, device="cuda", dtype=dt)
+        # The composite contract must not depend on input/residual alignment. Offsets cycle by
+        # round instead of drawing from the RNG, so a seed still yields the same shapes.
+        ox, orr = i % 2, (i // 2) % 2
+        x, r = _offset(x, ox), _offset(r, orr)
+        tag = f"{m}x{n} {dt} offsets={ox},{orr}"
         zc = (x.float() + r.float()).to(dt)
         out, z = fl.fused_add_rms_norm(x, r, (n,), w, 1e-6)
-        check("fused_add_rms z", torch.equal(z, zc), f"{m}x{n} {dt}")
-        check("fused_add_rms out", torch.equal(out, fl.rms_norm(z, (n,), w, 1e-6)),
-              f"{m}x{n} {dt}")
+        check("fused_add_rms z", torch.equal(z, zc), tag)
+        check("fused_add_rms out", torch.equal(out, fl.rms_norm(z, (n,), w, 1e-6)), tag)
         out2, z2 = fl.fused_add_layer_norm(x, r, (n,), w, b, 1e-5)
-        check("fused_add_ln z", torch.equal(z2, zc), f"{m}x{n} {dt}")
-        check("fused_add_ln out", torch.equal(out2, fl.layer_norm(z2, (n,), w, b, 1e-5)),
-              f"{m}x{n} {dt}")
+        check("fused_add_ln z", torch.equal(z2, zc), tag)
+        check("fused_add_ln out", torch.equal(out2, fl.layer_norm(z2, (n,), w, b, 1e-5)), tag)
+        with torch.no_grad():
+            o8, z8, s8 = fl.fused_add_rms_norm_fp8(x, r, (n,), w, 1e-6)
+            p8, ps8 = fl.rms_norm_fp8(z8, (n,), w, 1e-6)
+            check("fused_add_rms fp8 dyn",
+                  torch.equal(o8.view(torch.uint8), p8.view(torch.uint8)) and torch.equal(s8, ps8),
+                  tag)
+            o8, z8, s8 = fl.fused_add_layer_norm_fp8(x, r, (n,), w, b, 1e-5)
+            p8, ps8 = fl.layer_norm_fp8(z8, (n,), w, b, 1e-5)
+            check("fused_add_ln fp8 dyn",
+                  torch.equal(o8.view(torch.uint8), p8.view(torch.uint8)) and torch.equal(s8, ps8),
+                  tag)
 
 
 def fuzz_forward_numerics(rounds: int) -> None:

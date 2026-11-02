@@ -13,6 +13,10 @@ namespace fused_norm {
 
 constexpr int kWarpSize = 32;
 constexpr int kMaxThreads = 1024;
+// Few-row RMSNorm launches (norm_fwd_rms_rowreg_kernel / choose_small_m_rows): block size cap and
+// 16-byte vectors held per thread.
+constexpr int kSmallMMaxThreads = 512;
+constexpr int kSmallMVecs = 4;
 
 // Sum `val` across the 32 lanes of a warp. Every lane receives the full sum.
 template <typename acc_t>
@@ -123,6 +127,35 @@ __device__ __forceinline__ acc_t blockReduceMax(acc_t val) {
   val = (threadIdx.x < nwarps) ? shared[lane] : static_cast<acc_t>(0);
   if (wid == 0) val = warpReduceMax<acc_t>(val);
   return val;
+}
+
+// All-reduce variants for kernels that need the row result in EVERY thread: lane 0 of each warp
+// publishes its warp's partial to `part` (caller-owned __shared__ scratch of kMaxThreads / kWarpSize
+// slots, used by one reduction only), one __syncthreads(), then every warp reduces the partials
+// itself in the order blockReduceSum / blockReduceMax use in warp 0; a butterfly leaves every lane
+// with the same bits, so no broadcast barrier is needed.
+template <typename acc_t>
+__device__ __forceinline__ acc_t allReduceSum(acc_t val, acc_t* part) {
+  const int lane = threadIdx.x % kWarpSize;
+  const int wid = threadIdx.x / kWarpSize;
+  val = warpReduceSum<acc_t>(val);
+  if (lane == 0) part[wid] = val;
+  __syncthreads();
+  const unsigned int nwarps = blockDim.x / kWarpSize;
+  val = (static_cast<unsigned int>(lane) < nwarps) ? part[lane] : static_cast<acc_t>(0);
+  return warpReduceSum<acc_t>(val);
+}
+
+template <typename acc_t>
+__device__ __forceinline__ acc_t allReduceMax(acc_t val, acc_t* part) {
+  const int lane = threadIdx.x % kWarpSize;
+  const int wid = threadIdx.x / kWarpSize;
+  val = warpReduceMax<acc_t>(val);
+  if (lane == 0) part[wid] = val;
+  __syncthreads();
+  const unsigned int nwarps = blockDim.x / kWarpSize;
+  val = (static_cast<unsigned int>(lane) < nwarps) ? part[lane] : static_cast<acc_t>(0);
+  return warpReduceMax<acc_t>(val);
 }
 
 // Welford partial aggregate: n elements seen, their mean, and the centred sum

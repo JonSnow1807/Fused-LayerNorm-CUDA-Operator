@@ -1,5 +1,115 @@
 # Changelog
 
+## 0.6.0 — 2026‑10‑29 — Hopper RMSNorm fast paths, fused-add alignment fix
+
+PR #2 (`78300ca`, `396af24`, `5268275`). Developed and measured by the author
+on an H200 (numbers in the PR description; no result files from that machine
+are committed), checked on an A100 (the warp-per-row path runs there; SASS of
+the untouched kernels compared, PR comment of 2026‑10‑12) and on H100s
+(tests, sanitizers, the alignment reproduction, and — committed for this
+release — an A/B against v0.5.0 on an H100 NVL).
+
+### Added
+
+* **Warp-per-row dynamic-FP8 RMSNorm path** (`norm_fwd_rms_fp8dyn_warp_kernel`).
+  Dynamic-scale `rms_norm_fp8` / `fused_add_rms_norm_fp8` calls whose rows
+  the plain launch would give a 64-thread block (fp16/bf16 hidden size
+  128–1024, fp32 128–512, at least 256 rows) run one warp per row, single
+  pass, row in registers, shuffle-only reductions. Each lane reproduces two
+  threads of the old block in the same order, so outputs are **bitwise
+  identical to v0.5.0**. Not architecture-gated (also runs on A100).
+* **Register-resident few-row RMSNorm kernel, sm_90 only**
+  (`norm_fwd_rms_rowreg_kernel`). RMSNorm forward calls with fewer than 256
+  rows — plain, fused-add, static and dynamic fp8 — on 16-byte-aligned rows
+  of 128–16384 elements (fp16/bf16; ≤ 8192 fp32; ≤ 4096 fp64) use one block
+  per row of up to 512 threads, one global read, one-barrier all-reduces and
+  packed fp8 stores. All variants of a shape share the kernel, so "fp8 bytes
+  equal the quantised plain output" still holds bitwise. In-target output
+  bits can differ from v0.5.0 (summation order), within the contract — see
+  the fp32 note below. `FUSED_LAYERNORM_FORCE_KERNEL=scalar|vec` still
+  selects the pre-existing kernels.
+* Suite 289 → 335 tests (the alignment cases below; the new paths at
+  held-out and edge shapes: M at 255/256/257 and 4224–4226, NaN/Inf/−0/
+  subnormal rows, `scale_ub` below the floor, saturation, aliasing,
+  misaligned inputs); `tests/fuzz_contracts.py` now cycles input/residual
+  alignment and checks the fp8 fused-add composite. compute-sanitizer
+  memcheck, racecheck, synccheck and initcheck were run on the edge shapes
+  with launch counts and deliberate-fault controls (PR).
+
+### Fixed
+
+* **The fused-add bitwise contract with misaligned inputs.** With a
+  contiguous but not 16-byte-aligned `x` or `residual` (a `base[1:]` view),
+  the fused call could take a different kernel family than the composite
+  `plain_norm(new_residual)`, which only sees `new_residual`'s alignment, so
+  `out == plain_norm(new_residual)` could fail bitwise. This predates the
+  release from 256 rows (the vectorised kernel); the few-row kernel extended
+  it below 256 rows on sm_90. Now, when a misaligned input or residual
+  would put the fused launch on a different kernel family than the
+  composite, the RMSNorm, fused-add LayerNorm and LayerNorm-fp8 launchers
+  write `round(x + residual)` into `residual_out` and run the plain launch
+  on it, training forward included. Aligned calls are unchanged (same
+  kernels; no kernel code changed — all 250 kernels have identical SASS).
+  Misaligned calls now run two kernels: 0.45× to 1.7× the previous time
+  depending on shape (H100, CUDA-graph replay; 1×1024 RMSNorm 1.96 → 3.31 µs
+  is the worst), plus one launch in eager mode. Reproduction on an H100
+  (576 cases: RMS/LN, plain and fp8, three dtypes, 64 and 512 rows, N 1024
+  and 4096, in-place and out-of-place): 115 violations before the fix, 0
+  after; 46 new tests, 37 of which fail without it.
+
+### Measured — H100 NVL A/B (2026‑10‑29; branch `5268275` vs `origin/main` `93d5882`; clocks not lockable)
+
+* `benchmarks/results/2026-10-29_h100-nvl_v060_fastpaths/`: the same
+  `bench_norms.py` invocation for both builds (4 RMSNorm ops × 18 shapes ×
+  fp16/bf16/fp32), torch 2.13.0+cu130 / nvcc 13.4 in a Vast.ai container;
+  SM clock 1785 MHz recorded at every run start but not lockable;
+  `git_dirty = true` (in-tree output; explained there). Kernel time,
+  branch / v0.5.0 (< 1 = faster):
+  * few-row kernel, 140 rows: per-op medians fp16 0.62–0.66, bf16
+    0.64–0.70, fp32 0.65–0.85 (pooled min/median/max 0.40/0.65/1.00,
+    0.42/0.67/1.02, 0.54/0.74/0.96; graph-replay medians 0.69/0.71/0.79).
+    Faster at every width ≥ 4096 in all three dtypes (worst 0.92); best
+    0.40 (`rms_norm` fp16 32×16384, 8.57 → 3.45 µs); a wash at 32×768 and
+    32×1024 (0.83–1.02; one row 2 % slower, inside the ±4 % control noise).
+  * warp-per-row fp8 kernel, 6 rows, **hidden size 1024 only**: fp16
+    0.70/0.89/0.95, bf16 0.67/0.90/0.91 (`rms_norm_fp8_dynamic` 8192×1024
+    bf16 16.81 → 11.30 µs). fp32 and N ≤ 512 were not measured on this GPU;
+    there the H200 numbers below remain the only data.
+  * control, 70 rows with the same kernel in both builds: 0.96/1.00/1.05.
+* Same commit and machine: 335/335 tests in the default, scalar and vec
+  kernel modes, fuzz passes in each, racecheck 0 hazards and memcheck no
+  kernel-side errors on the edge-shape tests.
+
+### Measured — H200 (author's machine, SM clock locked at 1830 MHz, torch 2.13.0+cu129 / nvcc 12.9; PR #2 description, not committed)
+
+* Few-row kernel: CUDA-graph kernel time per-variant medians −24 % to
+  −36 %, up to −59 %; fp32 −15 % to −50 %. Warp-per-row fp8: kernel time
+  −8 % to −51 % in its range, 0.95–1.26× the `torch.compile`'d composite at
+  8192+ rows (fp32 1.09–1.38×); instructions per element 39 → 26. Still
+  slower than `torch.compile` at most decode shapes (0.71–0.90× plain,
+  0.75–1.09× dynamic fp8 at hidden 2048–8192; 0.67–0.74× at hidden 1024),
+  faster on 12288–16384-wide rows (1.2–2.7×). These remain the headline
+  numbers for the warp-per-row path at N ≤ 512 and in fp32, which the
+  committed H100 NVL data does not cover.
+
+### fp32 accuracy note (few-row kernel)
+
+The few-row kernel changes the fp32 summation order below 256 rows. The
+rule set in advance for the PR — "new error ≤ max(old error, 1 ulp)" — did
+not say at which magnitude the ulp is measured and, taken per element,
+fails for either kernel whenever the summation order lands on the other
+side; it was reported as failing 1 of 34 in-target cases. The rule that
+holds, verified on an H100 at `5268275` over 16,800 in-target fp32 cases
+(M < 256, 128 ≤ N ≤ 8192, randn inputs with |y| < 8, with and without
+weight, 100 seeds, fp64 reference), is additive:
+`max|y_new − y_fp64| ≤ max|y_old − y_fp64| + 2^-21` per case, 2^-21 being
+one fp32 ulp at |y| in [4, 8). It held in 16,800/16,800 cases with the
+largest excess exactly 2^-21. The kernel is not systematically worse than
+v0.5.0's: worse in 2435 cases, better in 2489 (sign test z = −0.77), mean
+max error 4.265e-7 vs 4.272e-7, worst element 4.06 vs 3.89 ulp. The
+max-form rule `new ≤ max(old, 2^-21)` fails 1483 of those cases and is not
+claimed.
+
 ## 0.5.0 — 2026‑08‑25 — fast backward, GELU backward, LayerNorm-family fp8
 
 ### Added

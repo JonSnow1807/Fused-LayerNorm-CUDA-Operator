@@ -41,6 +41,51 @@ inline bool apply_force_kernel_env(bool vec, bool vectorisable) {
   return vec;
 }
 
+// Few-row RMSNorm launches on sm_90 (decode-like batches, M < kVecMinRows): measured on an H200,
+// the scalar kernel the policy above picks for these rows is latency-bound on one row per SM, and
+// a block with up to 512 threads that reads each 16-byte vector once into registers is faster.
+// Used by every RMSNorm forward epilogue alike (plain, fused-add, fp8 static/dynamic), so the
+// outputs of the fused/quantised ops stay byte-identical to quantising the plain op's output.
+// FUSED_LAYERNORM_FORCE_KERNEL=scalar|vec keeps selecting the original kernel families.
+// Shape constants (kSmallMMaxThreads, kSmallMVecs) live in norm_reduce.cuh.
+
+inline bool force_kernel_requested() {
+  static const bool requested = [] {
+    const char* v = std::getenv("FUSED_LAYERNORM_FORCE_KERNEL");
+    return v != nullptr && (std::strcmp(v, "scalar") == 0 || std::strcmp(v, "vec") == 0);
+  }();
+  return requested;
+}
+
+// One vector per thread up to kSmallMMaxThreads threads (power of two, at least one warp).
+inline int small_m_block_size(int64_t N, int64_t vec_width) {
+  const int64_t nvec = N / vec_width;
+  int threads = kWarpSize;
+  while (threads < nvec && threads < kSmallMMaxThreads) threads *= 2;
+  return threads;
+}
+
+// The block size is checked against the kernel's register budget explicitly (every thread
+// holds at most kSmallMVecs vectors of the row) instead of relying on small_m_block_size's
+// formula; the condition depends on the shape only, so plain, fused-add and fp8 launches of a
+// shape always take the same kernel.
+inline bool choose_small_m_rows(bool vectorisable, int64_t M, int64_t N, int64_t vec_width,
+                                int device_major) {
+  if (!vectorisable || device_major != 9 || M >= kVecMinRows || N < 128 || force_kernel_requested()) {
+    return false;
+  }
+  const int64_t threads = small_m_block_size(N, vec_width);
+  return threads % kWarpSize == 0 && threads <= kSmallMMaxThreads &&
+         N / vec_width <= threads * kSmallMVecs;
+}
+
+// Fused-add composite contract: a fused-add launch needs input, residual_in and residual_out
+// 16-byte aligned for the vectorised kernels, while the composite plain_norm(residual_out) checks
+// residual_out alone. When that difference would move the fused launch to another kernel family
+// (another summation order) than the composite, the launcher runs the composite instead:
+// residual_out = round(input + residual_in), then the plain launch on residual_out. So
+// out == plain_norm(new_residual) holds bitwise for every alignment, and launches whose families
+// already agree are unchanged.
 inline bool choose_vec(bool vectorisable, int64_t M, int64_t N) {
   const bool vec = vectorisable && (N >= 128) && (M >= kVecMinRows);
   return apply_force_kernel_env(vec, vectorisable);

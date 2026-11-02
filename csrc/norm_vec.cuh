@@ -16,6 +16,12 @@ struct alignas(16) Vec {
   scalar_t v[kVecWidth<scalar_t>];
 };
 
+// kBytes bytes stored with one aligned store (narrow fp8 outputs of a vectorised kernel).
+template <int kBytes>
+struct alignas(kBytes) Packed {
+  unsigned char b[kBytes];
+};
+
 // Contiguity alone does not guarantee alignment: a contiguous 1-D slice like
 // base[1:] keeps its storage offset, so its data_ptr can sit 4 bytes into an
 // allocation; PyTorch's own vectorised kernel makes the same runtime check.

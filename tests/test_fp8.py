@@ -21,7 +21,7 @@ from fused_layernorm import (
     rms_norm_fp8,
 )
 
-from _helpers import DEVICE, _affine, _randn, requires_cuda_ext
+from _helpers import DEVICE, _affine, _misaligned, _randn, requires_cuda_ext
 
 pytestmark = pytest.mark.skipif(
     not hasattr(torch, "float8_e4m3fn"), reason="torch build lacks float8_e4m3fn"
@@ -121,6 +121,39 @@ def test_fused_add_fp8_dynamic_and_inplace() -> None:
         out_i, z_i, s_i = fused_add_rms_norm_fp8(x, r2, (512,), w, 1e-6, inplace=True)
         assert z_i.data_ptr() == r2.data_ptr()
         assert torch.equal(_bytes(out_i), _bytes(out)) and torch.equal(s_i, s)
+
+
+@pytest.mark.cuda
+@requires_cuda_ext
+@pytest.mark.parametrize("dtype", FP8_DTYPES, ids=str)
+@pytest.mark.parametrize("rows", [192, 512])
+@pytest.mark.parametrize(
+    "which,inplace",
+    [("input", False), ("residual", False), ("input", True)],
+    ids=["input", "residual", "input-inplace"],
+)
+def test_fused_add_fp8_matches_plain_fp8_misaligned(which, inplace, rows, dtype) -> None:
+    """Fused-add fp8 bytes and scales equal the plain fp8 op on new_residual when input or
+    residual is not 16-byte aligned."""
+    x = _randn((rows, 4096), dtype)
+    r = _randn((rows, 4096), dtype)
+    w, b = _affine(4096, dtype)
+    if which == "input":
+        x = _misaligned(x)
+    else:
+        r = _misaligned(r)
+    with torch.no_grad():
+        for scale in (None, torch.tensor([0.02], device=DEVICE)):
+            out, z, s = fused_add_rms_norm_fp8(x, r.clone() if inplace else r, (4096,), w, 1e-6,
+                                               scale=scale, inplace=inplace)
+            ref, ref_s = rms_norm_fp8(z, (4096,), w, 1e-6, scale=scale)
+            assert torch.equal(z, x + r)
+            assert torch.equal(_bytes(out), _bytes(ref)) and torch.equal(s, ref_s)
+            out, z, s = fused_add_layer_norm_fp8(x, r.clone() if inplace else r, (4096,), w, b,
+                                                 1e-5, scale=scale, inplace=inplace)
+            ref, ref_s = layer_norm_fp8(z, (4096,), w, b, 1e-5, scale=scale)
+            assert torch.equal(z, x + r)
+            assert torch.equal(_bytes(out), _bytes(ref)) and torch.equal(s, ref_s)
 
 
 @pytest.mark.cuda

@@ -83,6 +83,10 @@ struct EpiFp8Dynamic {
   static constexpr bool kNeedsRowMax = true;
   __device__ __forceinline__ float load_inv_scale() const { return 1.f; }  // replaced per row
   __device__ __forceinline__ float finalize_scale(float amax, int64_t row) const {
+    return finalize_scale(amax, row, /*writer=*/true);
+  }
+  // Every thread of a warp may compute the scale (identical bits); only `writer` stores it.
+  __device__ __forceinline__ float finalize_scale(float amax, int64_t row, bool writer) const {
     // A NaN amax (any NaN in the row) must poison the scale like torch.amax
     // does in the eager composite; fminf/fmaxf would silently drop it.
     if (!isnan(amax)) {
@@ -90,7 +94,7 @@ struct EpiFp8Dynamic {
       amax = fmaxf(amax, 1e-12f);
     }
     const float scale = amax / 448.f;
-    scale_out[row] = scale;
+    if (writer) scale_out[row] = scale;
     return 1.f / scale;
   }
   __device__ __forceinline__ out_t store(acc_t v, float inv_scale) const {

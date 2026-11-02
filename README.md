@@ -16,13 +16,16 @@ measured claim.
 > ([`CHANGELOG.md`](CHANGELOG.md) lists everything removed). Since then every
 > number quoted here points at a committed file under
 > [`benchmarks/results/`](benchmarks/results/) whose JSON records the git
-> commit it was produced from with a clean working tree, and the full test
-> suite (currently 289 tests) is run on hardware before any release. v0.3.0
+> commit it was produced from with a clean working tree (one exception, the
+> 2026‑10‑29 H100 NVL A/B run, records `git_dirty = true` because it wrote
+> its output inside the checkout; its README says so), and the full test
+> suite (currently 335 tests) is run on hardware before any release. v0.3.0
 > (2026‑08‑20) added the first kernel-time measurements; v0.4.0 turned the
 > single forward-only kernel into the library described below; v0.4.1 and
 > v0.4.2 are post-release patches for defects found by re-auditing and
 > fuzzing our own release — each itemised in the CHANGELOG rather than
-> paraphrased.
+> paraphrased; v0.6.0 (2026‑10‑29) adds two Hopper RMSNorm forward paths
+> and fixes the fused-add alignment contract.
 
 ## Why this exists
 
@@ -62,7 +65,10 @@ paths (it exists so `torch.autograd.gradcheck` can run). torch ≥ 2.4.
 * Fused-add computes `new_residual = round(x + residual)` — rounded to the
   input dtype exactly once — and normalises the *rounded* sum, so
   `out == plain_norm(new_residual)` holds **bitwise**: the fused op is
-  indistinguishable from the unfused composite.
+  indistinguishable from the unfused composite. This holds for any input
+  alignment: if a contiguous but misaligned `x` or `residual` (a `base[1:]`
+  view) would put the fused call on a different kernel than the composite,
+  the call runs the composite itself (the add, then the plain norm).
 * fp8 outputs equal quantising the plain norm output with
   `round_e4m3(clamp(y * (1/scale), ±448))` — the reciprocal multiply is part
   of the byte-level contract; `scale` is the dequant scale
@@ -121,7 +127,8 @@ pip install --no-build-isolation -e .   # builds against the torch you have inst
 python -m pytest tests -q               # GPU tests skip without a GPU/extension
 ```
 
-Built and tested with PyTorch 2.13.0+cu129 / CUDA 12.9 on an A100‑SXM4‑40GB;
+Built and tested with PyTorch 2.13.0+cu129 / CUDA 12.9 on an A100‑SXM4‑40GB
+and with 2.13.0+cu130 / nvcc 13.4 on an H100 NVL (v0.6.0);
 CI compiles for sm80/sm90 and runs the CPU fallback suite on torch 2.4 and
 2.13 (CI has no GPU — it cannot verify kernel numerics; the committed
 hardware runs do).
@@ -133,9 +140,53 @@ GPU kernel time from `torch.profiler` (the only number quoted as a kernel
 speedup), and CUDA-graph replay, produced by the committed scripts from a
 clean clone of the release commit, with SM clocks locked (since v0.4.2 —
 at the boost ceiling on the A100, at the sustained clock on the H100;
-unlocked clocks moved small-shape kernel times ~30 % between days; [`docs/methodology.md`](docs/methodology.md) §7 has the numbers).
+unlocked clocks moved small-shape kernel times ~30 % between days; [`docs/methodology.md`](docs/methodology.md) §7 has the numbers.
+The one run that could not lock clocks, the 2026‑10‑29 H100 NVL A/B, says
+so and quotes only same-session ratios).
 Competitors include the same composite under `torch.compile(fullgraph=True)`
 — beating only eager would be a strawman.
+
+### 2026‑10‑29, H100 NVL: the v0.6.0 Hopper RMSNorm fast paths vs v0.5.0
+
+[`benchmarks/results/2026-10-29_h100-nvl_v060_fastpaths/`](benchmarks/results/2026-10-29_h100-nvl_v060_fastpaths/)
+(fp16 + bf16 + fp32; the PR #2 branch at `5268275` against `origin/main`
+`93d5882`, whose forward kernels are the v0.5.0 tag's; one container, the
+same `bench_norms.py` invocation for both builds, 4 RMSNorm ops × 18
+shapes; torch 2.13.0+cu130, nvcc 13.4; SM clock **not lockable** there —
+1785 MHz recorded at the start of every run; `git_dirty = true` for the
+reason the directory README gives). v0.6.0 adds two sm_90 forward paths: a
+register-resident **few-row kernel** for RMSNorm calls with fewer than 256
+rows, and a **warp-per-row dynamic-FP8 kernel** for hidden sizes ≤ 1024
+(fp16/bf16; ≤ 512 fp32) at 256+ rows. Kernel time of the branch as a
+fraction of v0.5.0's (below 1 = faster), min / median / max over every row
+the path dispatches on:
+
+| path | fp16 | bf16 | fp32 |
+|---|---|---|---|
+| few-row kernel (48 / 48 / 44 rows) | 0.40 / 0.65 / 1.00 | 0.42 / 0.67 / 1.02 | 0.54 / 0.74 / 0.96 |
+| warp-per-row dynamic FP8 (3 / 3 / 0 rows; hidden size 1024 only) | 0.70 / 0.89 / 0.95 | 0.67 / 0.90 / 0.91 | not measured |
+| control: same kernel in both builds (70 rows, all dtypes) | 0.96 / 1.00 / 1.05 | | |
+
+How to read it honestly:
+
+* **The few-row kernel is faster at every measured shape of width ≥ 4096,
+  in all three dtypes** (116 rows, worst 0.92×): per-op medians 0.62–0.66×
+  fp16, 0.64–0.70× bf16, 0.65–0.85× fp32 — e.g. `rms_norm` bf16 64×4096
+  3.41 → 2.37 µs, fp32 64×4096 3.29 → 2.35 µs, bf16 32×16384
+  8.59 → 3.62 µs. At 32×768 and 32×1024 it is a wash (0.83–1.02×; the one
+  row above 1, `rms_norm` bf16 32×768 at 1.02×, is inside the ±4 %
+  control-row noise). Graph-replay medians 0.69 / 0.71 / 0.79.
+* **The warp-per-row FP8 kernel has H100 data at hidden size 1024 only**:
+  `rms_norm_fp8_dynamic` 8192×1024 bf16 16.81 → 11.30 µs (0.67×),
+  512×1024 0.89–0.90×, the fused-add variant 0.91–0.95× at 8192×1024. Its
+  N ≤ 512 and fp32 ranges have no committed measurement; the PR's H200
+  numbers (−8 % to −51 % kernel time over the whole range) are the only
+  data there and are quoted in the CHANGELOG as such.
+* **Nothing else moved**: the 70 rows that run the same kernel in both
+  builds sit at a 1.00 median, 0.96–1.05, which is also the noise floor for
+  every number above. One run per cell; branch and baseline not
+  interleaved (22:18–22:24 Z vs 22:32–22:36 Z); absolute microseconds are
+  not comparable to the H200 or to the 2026‑08‑25 H100 80GB HBM3 data.
 
 ### 2026‑08‑25, A100‑SXM4‑40GB: the op family (v0.5.0 data)
 
@@ -238,11 +289,24 @@ its history live in
 
 ## Not verified / limitations
 
-* Two GPUs measured (A100-SXM4-40GB, H100 80GB HBM3); other architectures
-  compile but are unmeasured. The kernel-selection heuristics are tuned on
-  A100 measurements only — on the H100 the kernels are correct and keep
-  their eager-mode wins, but the kernel-time edge over `torch.compile` is
-  A100-specific (measured and published in the H100 results directory).
+* Three GPUs measured (A100-SXM4-40GB, H100 80GB HBM3, H100 NVL); other
+  architectures compile but are unmeasured. The v0.5.0 kernel-selection
+  heuristics are tuned on A100 measurements — on the H100 the kernels are
+  correct and keep their eager-mode wins, but the kernel-time edge over
+  `torch.compile` is A100-specific (measured and published in the H100
+  results directory). v0.6.0's two sm_90 RMSNorm paths were measured
+  against v0.5.0 on an H100 NVL (committed) and on an H200 (PR #2, not
+  committed); the H100 NVL files contain `torch.compile` candidates but no
+  claim against `torch.compile` is made from them.
+* The warp-per-row dynamic-FP8 path has committed data at hidden size 1024
+  (fp16/bf16) only; its N ≤ 512 and fp32 ranges rest on the PR's H200
+  numbers.
+* The few-row kernel changes the fp32 summation order below 256 rows. Over
+  16,800 in-target fp32 cases on an H100 its per-case max error stayed
+  within the v0.5.0 kernel's plus 2^-21 (one fp32 ulp at |y| in [4, 8); the
+  largest excess was exactly that), and it was worse in 2435 cases and
+  better in 2489 — not systematically worse. The exact rule and what it
+  does not say are in the 0.6.0 CHANGELOG entry.
 * Small-shape (~10 µs) kernel times are properties of the GPU's clock state
   as much as of the kernel; committed runs lock SM clocks (methodology §7),
   and claims that live on a few percent at those shapes should be read with
@@ -267,12 +331,13 @@ its history live in
 
 ```
 csrc/                       kernels: layernorm_cuda_kernel.cu (v0.3.0 LN kernels, unchanged),
-                            norm_fwd_kernels.cuh (generic {LN,RMS} x {plain,fused-add} x epilogue),
+                            norm_fwd_kernels.cuh (generic {LN,RMS} x {plain,fused-add} x epilogue,
+                            plus the v0.6.0 sm_90 RMSNorm few-row and warp-per-row fp8 kernels),
                             norm_fwd_{ln,rms}.cu, norm_bwd{,_gelu}.cu, norm_bwd_kernels.cuh,
                             norm_{reduce,vec,epilogue,dispatch}.cuh, bindings.cpp, layernorm.h
 fused_layernorm/            package: layernorm.py, rms_norm.py, fused_add.py, quant.py,
                             _ops.py (torch.library custom ops + autograd), _common.py
-tests/                      289 tests: per-op suites, gradcheck (fp64), bitwise contracts,
+tests/                      335 tests: per-op suites, gradcheck (fp64), bitwise contracts,
                             opcheck, torch.compile fullgraph, determinism, NaN semantics;
                             fuzz_contracts.py (randomized contract fuzz, run explicitly)
 benchmarks/                 bench_layernorm.py (LayerNorm), bench_norms.py (the op family),
